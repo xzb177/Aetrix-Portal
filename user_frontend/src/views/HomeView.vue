@@ -675,10 +675,42 @@ function onResumeThumbError(card: ResumeCard) {
   }
 }
 
-/** Hero 眉题：有今日入库叫「今日新片」，否则「本周新片」；没有片单就只写站点氛围 */
+/** Hero 眉题：有片单时只写「今晚放映 · 今日新片」——片名是 H1 的主角，眉题不再重复 */
 const heroEyebrow = computed(() => {
   if (!heroItem.value) return '今晚放映'
-  return `${recentHasToday.value ? '今日新片' : '本周新片'} · ${recentTitle(heroItem.value)}`
+  return `今晚放映 · ${recentHasToday.value ? '今日新片' : '本周新片'}`
+})
+
+/** 问候语拆成 lead + tail：名字插在中间才顺——"夜深了，影迷，今晚看什么？"
+ *  （直接拼 "夜深了，来部电影？，影迷" 会冒出 "?，" 这种怪标点） */
+const greetingParts = computed(() => {
+  const hour = new Date().getHours()
+  if (hour < 6) return { lead: '夜深了', tail: '，今晚看什么？' }
+  if (hour < 12) return { lead: '上午好', tail: '' }
+  if (hour < 14) return { lead: '中午好', tail: '，吃完饭看点什么' }
+  if (hour < 18) return { lead: '下午好', tail: '' }
+  return { lead: '晚上好', tail: '，今晚看什么？' }
+})
+
+/** Hero 主角：和 heroImage 同一条片子（近 7 天入库里第一条带背景图的）——
+ *  银幕上只讲一部片，这是影院和货架的区别 */
+const heroFeatureTitle = computed(() => (heroItem.value ? recentTitle(heroItem.value) : ''))
+
+/** 主角元信息：年份 · 电影/剧集（一行小字，不抢片名的风头） */
+const heroMeta = computed(() => {
+  const it = heroItem.value
+  if (!it) return ''
+  const parts: string[] = []
+  if (it.ProductionYear) parts.push(String(it.ProductionYear))
+  parts.push(it.Type === 'Movie' ? '电影' : '剧集')
+  return parts.join(' · ')
+})
+
+/** 主角跳转：和海报行同一条 Rex deep link 规则（单集按剧名搜，不填单集 TMDB id，见 rexDeepLink） */
+const heroHref = computed(() => {
+  const it = heroItem.value
+  if (!it) return ''
+  return rexDeepLink({ Name: it.Name, Type: it.Type, SeriesName: it.SeriesName, ProviderIds: it.ProviderIds ?? null })
 })
 
 /** Hero 状态行：会员状态 + 签到（都是首页已有的数据，不额外请求）
@@ -724,9 +756,11 @@ onActivated(() => {
 
 <template>
   <div class="home-view">
-    <!-- ① 幕布 Hero：整幅背景图（近 7 天入库的第一张背景图，没有就是暖黑渐变），
-         底部渐隐到页面底色；左下角眉题 + 衬线问候 + 状态行 + 唯一一个琥珀主按钮 -->
-    <section class="hero" :class="{ 'has-image': heroImage && !heroImageFailed }">
+    <!-- ① 银幕 Hero：整幅背景图 + 胶片颗粒 + 暗角。
+         银幕上只讲一部片（近 7 天入库里第一条带背景图的），这是影院和货架的区别。
+         眉题 → 片名（衬线大字）→ 年份类型 → 问候低语 → 状态行 → 唯一一个 CTA。
+         文字按 hasLoaded 依次浮现（幕布拉开的节奏），见 .hero-enter。 -->
+    <section class="hero" :class="{ 'has-image': heroImage && !heroImageFailed, 'is-ready': hasLoaded }">
       <img
         v-if="heroImage && !heroImageFailed"
         class="hero-backdrop"
@@ -737,10 +771,17 @@ onActivated(() => {
         @error="heroImageFailed = true"
       />
       <div class="hero-shade" aria-hidden="true"></div>
+      <div class="hero-grain" aria-hidden="true"></div>
       <div class="container hero-inner">
-        <p class="au-eyebrow hero-eyebrow">{{ heroEyebrow }}</p>
-        <h1 class="hero-title">{{ greeting }}，{{ user?.username || '观影用户' }}</h1>
-        <p class="hero-status">
+        <p class="au-eyebrow hero-eyebrow hero-enter d1">{{ heroEyebrow }}</p>
+        <!-- 有主角：片名是主角；没有片单：问候语顶上（老行为，不空场） -->
+        <h1 v-if="heroFeatureTitle" class="hero-feature hero-enter d2">{{ heroFeatureTitle }}</h1>
+        <h1 v-else class="hero-title hero-enter d2">{{ greeting }}，{{ user?.username || '影迷' }}</h1>
+        <p v-if="heroFeatureTitle && heroMeta" class="hero-meta hero-enter d3">{{ heroMeta }}</p>
+        <p v-if="heroFeatureTitle" class="hero-whisper hero-enter d3">
+          <span class="whisper-long">{{ greetingParts.lead }}，{{ user?.username || '影迷' }}{{ greetingParts.tail }}</span><span class="whisper-short">{{ greeting }}，{{ user?.username || '影迷' }}</span>
+        </p>
+        <p class="hero-status hero-enter d4">
           <span v-if="isMember" class="hero-tag">
             <Crown :size="12" />
             会员
@@ -749,13 +790,23 @@ onActivated(() => {
             <Sparkles :size="12" />
             公益服
           </span>
-
+          <span class="hero-status-text">{{ heroStatus }}</span>
         </p>
 
-        <!-- 未开通：三步看片指引。门户最大的 friction 是"付了钱不会配置客户端"，
-             所以首屏不讲会员权益、讲"怎么看上片"；主按钮只有一个（开通） -->
+        <!-- 未开通：先给 CTA（立即开通），再给「入场三步」——
+             门户最大的 friction 是"付了钱不会配置客户端"，所以首屏不讲会员权益、讲"怎么看上片" -->
         <template v-if="!isMember && !isFreeRealm">
-          <ol class="hero-steps">
+          <div class="hero-cta hero-enter d5">
+            <RouterLink to="/store" class="au-btn au-btn-primary">
+              立即开通
+            </RouterLink>
+            <RouterLink to="/profile" class="hero-link">
+              连接教程
+              <ChevronRight :size="14" />
+            </RouterLink>
+          </div>
+          <p class="au-eyebrow steps-label hero-enter d6">入场三步</p>
+          <ol class="hero-steps hero-enter d6">
             <li>
               <span class="step-num">1</span>
               <span class="step-body"><strong>开通会员</strong><em>解锁全库影视资源</em></span>
@@ -769,30 +820,20 @@ onActivated(() => {
               <span class="step-body"><strong>一键导入</strong><em>在个人中心导入服务器地址与账号</em></span>
             </li>
           </ol>
-          <div class="hero-cta">
-            <RouterLink to="/store" class="au-btn au-btn-primary">
-              立即开通
-            </RouterLink>
-            <RouterLink to="/profile" class="hero-link">
-              连接教程
-              <ChevronRight :size="14" />
-            </RouterLink>
-          </div>
         </template>
 
-        <!-- 已开通 / 公益服：看片在第三方客户端完成，主按钮就是「把服务器导进播放器」 -->
+        <!-- 已开通 / 公益服：主角就是 CTA——在 Rex 里打开今晚这部片（描边按钮，hover 才填色）。
+             没有主角时回落到「一键导入播放器」 -->
         <template v-else>
-
-          <div class="hero-cta">
-            <RouterLink to="/profile" class="au-btn au-btn-primary">
+          <div class="hero-cta hero-enter d5">
+            <a v-if="heroHref" :href="heroHref" class="au-btn hero-cta-outline">
+              在 Rex 里打开
+            </a>
+            <RouterLink v-else to="/profile" class="au-btn au-btn-primary">
               一键导入播放器
             </RouterLink>
             <RouterLink to="/profile" class="hero-link">
               连接教程
-              <ChevronRight :size="14" />
-            </RouterLink>
-            <RouterLink to="/request" class="hero-link">
-              求片
               <ChevronRight :size="14" />
             </RouterLink>
           </div>
@@ -894,15 +935,18 @@ onActivated(() => {
         </div>
       </section>
 
-      <!-- ③ 今日入库：近 7 天入库的竖版海报横滑（追新日历同一份数据），
+      <!-- ③ 今日上映：近 7 天入库的竖版海报横滑（追新日历同一份数据），
            点击与追新日历一致走 Rex deep link；没有数据整段不渲染 -->
       <section v-if="recentCards.length" class="recent au-anim-up">
-        <div class="section-label">
-          <span class="section-title">{{ recentHasToday ? '今日上映' : '本周上映' }}</span>
-          <RouterLink to="/calendar" class="section-more">
-            追新日历
-            <ChevronRight :size="14" />
-          </RouterLink>
+        <div class="program-head">
+          <p class="program-eyebrow">本周排片</p>
+          <div class="program-row">
+            <h2 class="program-title">{{ recentHasToday ? '今日上映' : '本周上映' }}</h2>
+            <RouterLink to="/calendar" class="program-more">
+              追新日历
+              <ChevronRight :size="14" />
+            </RouterLink>
+          </div>
         </div>
         <div class="poster-row">
           <a
@@ -936,8 +980,11 @@ onActivated(() => {
       <!-- ③b 继续观看：最多 3 条，最近播放的在前；没有条目整段不渲染。
            点击与「本周入库」一致走 Rex deep link -->
       <section v-if="resumeCards.length" class="resume au-anim-up">
-        <div class="section-label">
-          <span class="section-title">上次看到一半的</span>
+        <div class="program-head">
+          <p class="program-eyebrow">继续放映</p>
+          <div class="program-row">
+            <h2 class="program-title">上次看到一半的</h2>
+          </div>
         </div>
         <div class="resume-list">
           <a
@@ -984,9 +1031,12 @@ onActivated(() => {
 
       <!-- ④ 正在播放：有会话才出现（一条状态，不是管理清单）；完整清单在个人中心 -->
       <section v-if="sessions.length" class="playing au-anim-up">
-        <div class="section-label">
-          <span class="section-title">正在放映</span>
-          <span class="section-hint">{{ sessions.length }} 个会话</span>
+        <div class="program-head">
+          <p class="program-eyebrow">放映中</p>
+          <div class="program-row">
+            <h2 class="program-title"><span class="live-dot" aria-hidden="true"></span>正在放映</h2>
+            <span class="program-more">{{ sessions.length }} 台设备</span>
+          </div>
         </div>
         <div class="playing-list">
           <div v-for="s in sessions" :key="s.session_key" class="playing-row">
@@ -1034,8 +1084,11 @@ onActivated(() => {
       </section>
 
       <!-- ⑤ 进行中：自己提交的求片 / 工单处理到哪了 -->
-      <div class="section-label">
-        <span class="section-title">等片中</span>
+      <div class="program-head">
+        <p class="program-eyebrow">等候区</p>
+        <div class="program-row">
+          <h2 class="program-title">等片中</h2>
+        </div>
       </div>
       <section v-if="loading" class="todo-card" aria-hidden="true">
         <div class="au-skeleton sk-panel-row"></div>
@@ -1054,8 +1107,11 @@ onActivated(() => {
       </section>
 
       <!-- ⑥ 帮助中心：纯文字列表 + 发丝分隔线，不再有图标方块 -->
-      <div class="section-label">
-        <span class="section-title">放映指南</span>
+      <div class="program-head">
+        <p class="program-eyebrow">服务台</p>
+        <div class="program-row">
+          <h2 class="program-title">放映指南</h2>
+        </div>
       </div>
       <nav class="help-list" aria-label="帮助中心">
         <RouterLink to="/profile" class="help-row">
@@ -1142,15 +1198,57 @@ onActivated(() => {
   object-position: center 30%;
 }
 
-/* 背景图上叠两层（都是写死的暖黑，不跟主题）：
-   自左向右压暗（文字区可读）+ 自上而下由透明压到 0.92（底部文字与按钮行落在近黑上） */
+/* 背景图上叠三层（都是写死的暖黑，不跟主题）：
+   暗角（影院感，先画）+ 自左向右压暗（文字区可读）+ 自上而下由透明压到 0.92
+   （底部文字与按钮行落在近黑上） */
 .hero-shade {
   position: absolute;
   inset: 0;
   pointer-events: none;
   background:
+    radial-gradient(ellipse 90% 75% at 50% 42%, transparent 58%, rgba(5, 4, 3, 0.42) 100%),
     linear-gradient(90deg, rgba(12, 10, 9, 0.55) 0%, rgba(12, 10, 9, 0.2) 55%, transparent 85%),
     linear-gradient(180deg, transparent 0%, rgba(12, 10, 9, 0.35) 40%, rgba(12, 10, 9, 0.92) 100%);
+}
+
+/* 胶片颗粒：<5% 的噪点是"高级感"和"塑料感"的分界线（60fps / backgrounds.supply 交叉验证）。
+   两套主题都只在 Hero 用，不污染正文区 */
+.hero-grain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.55;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='0.06'/%3E%3C/svg%3E");
+}
+
+/* 幕布拉开：文字按 hasLoaded 依次浮现（眉题 → 片名 → 元信息/低语 → 状态 → CTA → 三步），
+   650ms + 70ms 级差，幕布感。关掉动画时（reduced-motion）直接可见，不消失 */
+.hero-enter {
+  opacity: 0;
+  transform: translateY(14px);
+}
+
+.hero.is-ready .hero-enter {
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 0.65s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.65s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.hero.is-ready .d1 { transition-delay: 0.05s; }
+.hero.is-ready .d2 { transition-delay: 0.12s; }
+.hero.is-ready .d3 { transition-delay: 0.19s; }
+.hero.is-ready .d4 { transition-delay: 0.26s; }
+.hero.is-ready .d5 { transition-delay: 0.33s; }
+.hero.is-ready .d6 { transition-delay: 0.4s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-enter {
+    opacity: 1;
+    transform: none;
+  }
+  .hero.is-ready .hero-enter { transition: none; }
 }
 
 .hero:not(.has-image) .hero-shade {
@@ -1180,6 +1278,82 @@ onActivated(() => {
   color: var(--au-text);
   text-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
   overflow-wrap: anywhere;
+}
+
+/* 主角片名：银幕上只讲一部片。衬线大字是"印刷品"质感的来源（A24 式克制），
+   text-wrap: balance 让中英混排的片名不断在尴尬处 */
+.hero-feature {
+  margin: 0;
+  font-family: var(--au-font-serif);
+  font-size: clamp(2rem, 6vw, 3.5rem);
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+  color: #f3ede4;
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.5);
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+
+/* 年份 · 电影/剧集：一行小字，不抢片名的风头 */
+.hero-meta {
+  margin: 0.625rem 0 0;
+  font-size: 0.8125rem;
+  letter-spacing: 0.14em;
+  color: var(--au-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 问候低语：从陈述变邀约（"夜深了，来部电影？"），是"老朋友"不是"客服" */
+.hero-whisper {
+  margin: 0.5rem 0 0;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--au-text-2);
+}
+
+.whisper-short { display: none; }
+
+/* 状态行里新接上的文字（heroStatus 一直算着但模板没用过，现在接上） */
+.hero-status-text {
+  color: var(--au-text-3);
+}
+
+/* 描边 CTA（land-book 暗色 Hero 三件套）：平时只描边，hover 才填色。
+   全页的主按钮只有一个琥珀实心（未开通的"立即开通"），已开通页这个描边的是唯一 CTA */
+.hero-cta-outline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  padding: 0 1.5rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #f3ede4;
+  text-decoration: none;
+  white-space: nowrap;
+  background: transparent;
+  border: 1px solid rgba(243, 237, 228, 0.45);
+  border-radius: var(--au-r-md);
+  transition:
+    background var(--au-fast) var(--au-ease),
+    border-color var(--au-fast) var(--au-ease),
+    color var(--au-fast) var(--au-ease);
+}
+
+.hero-cta-outline:hover {
+  background: #f3ede4;
+  border-color: #f3ede4;
+  color: #14100c;
+}
+
+.hero-cta-outline:active {
+  transform: scale(0.97);
+}
+
+/* 入场三步的小标签：和眉题同一套语言 */
+.steps-label {
+  margin: 1.5rem 0 0;
 }
 
 .hero-status {
@@ -1304,31 +1478,70 @@ onActivated(() => {
   margin-bottom: 1.25rem;
 }
 
-.section-label {
+/* ==================== 放映单 · 区块标题体系 ====================
+   节奏：眉题（11px 大写字距小标签，land-book 式）→ 衬线标题 → 右侧 more 链。
+   区块间距桌面 64px / 移动 40px（Carbon 断点跳档，不用中间值），标题与内容 20px/16px。
+   一屏字重只出现两种：600（标题）+ 400/500（正文），衬线标题不再用 700。 */
+
+.program-head {
+  margin: 4rem 0 1.25rem;
+}
+
+.program-eyebrow {
+  margin: 0 0 0.375rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--au-text-3);
+  white-space: nowrap;
+}
+
+.program-row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 1rem;
-  margin: 2.25rem 0 0.875rem;
 }
 
-.section-title {
-  font-size: 1.25rem;
-  font-weight: 700;
+.program-title {
+  margin: 0;
+  font-family: var(--au-font-serif);
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.3;
   color: var(--au-text);
 }
 
-.section-more,
-.section-hint {
+.program-more {
   display: inline-flex;
   align-items: center;
   gap: 0.125rem;
+  flex-shrink: 0;
   font-size: 0.8125rem;
   color: var(--au-text-3);
   text-decoration: none;
+  transition: color var(--au-fast) var(--au-ease);
 }
 
-.section-more:hover { color: var(--au-primary); }
+a.program-more:hover { color: var(--au-primary); }
+
+/* 放映中：标题前一颗呼吸圆点（全页唯一一处动态强调色，"决定性瞬间"才用琥珀） */
+.live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 0.625rem;
+  border-radius: 50%;
+  background: var(--au-primary);
+  vertical-align: 0.125em;
+  animation: au-pulse-soft 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-dot { animation: none; }
+}
 
 /* ==================== 说明条幅 ==================== */
 
@@ -1447,7 +1660,7 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
   white-space: nowrap;
 }
 
-.stat-icon { color: var(--au-text-2); flex-shrink: 0; }
+.stat-icon { color: var(--au-primary); flex-shrink: 0; }
 
 .stat-badge {
   margin-left: auto;
@@ -1768,11 +1981,16 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
   border-radius: var(--au-r-lg);
   color: inherit;
   text-decoration: none;
-  transition: border-color var(--au-fast) var(--au-ease);
+  transition:
+    border-color var(--au-fast) var(--au-ease),
+    transform 120ms ease-out;
 }
 
 .resume-card:hover { border-color: var(--au-border-strong); }
 .resume-card:hover .resume-thumb img { filter: brightness(1.08); }
+
+/* 按压回弹（60fps 三档按压：卡片级用 0.98，和海报 0.97 区分层级） */
+.resume-card:active { transform: scale(0.98); }
 
 .resume-thumb {
   flex: 0 0 auto;
@@ -2160,6 +2378,23 @@ section.todo-card[aria-hidden='true'] { padding: 1rem; }
     padding-bottom: 1.5rem;
   }
 
+  /* 窄屏问候用短版（"夜深了"而不是"夜深了，来部电影？"），和票根卡 stat-short 同一套路 */
+  .whisper-long { display: none; }
+  .whisper-short { display: inline; }
+
+  .hero-feature {
+    font-size: clamp(1.75rem, 8.5vw, 2.25rem);
+  }
+
+  /* 放映单标题体系：区块间距 40px（Carbon 断点跳档），标题收到 20px */
+  .program-head {
+    margin: 2.5rem 0 1rem;
+  }
+
+  .program-title {
+    font-size: 1.25rem;
+  }
+
   .hero-steps {
     grid-template-columns: minmax(0, 1fr);
     gap: 0.625rem;
@@ -2220,6 +2455,5 @@ section.todo-card[aria-hidden='true'] { padding: 1rem; }
   }
 }
 </style>
-
 
 
