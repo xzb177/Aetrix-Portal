@@ -373,6 +373,26 @@ class TestMountsStrmBranch:
         with pytest.raises(mounts.MountError, match="没有可用的直链"):
             mounts.local_play_target(path)
 
+    def test_resolve_final_strm_verified(self):
+        """远程挂载入口 resolve_final 同样走验签（与 local_play_target 共用 helper）。"""
+        from backend.emby_server import mounts, strm_sign
+
+        signed = strm_sign.sign_strm_url(DRIVE_URL, ttl_seconds=3600)
+        provider = mounts.MountProvider.__new__(mounts.MountProvider)
+        provider.read_text = lambda rel: signed
+        with mock.patch(
+            "backend.emby_server.drive_auth.drive_auth_headers",
+            return_value={"Authorization": "Bearer T"},
+        ):
+            target = provider.resolve_final("movie.strm")
+        assert target.kind == "url"
+        assert target.value == DRIVE_URL
+        assert target.headers["Authorization"] == "Bearer T"
+
+        provider.read_text = lambda rel: DRIVE_URL + "&aexp=1&asig=deadbeef"
+        with pytest.raises(mounts.MountError, match="签名无效或已过期"):
+            provider.resolve_final("movie.strm")
+
 
 # ==================== streaming._redirect_headers ====================
 
