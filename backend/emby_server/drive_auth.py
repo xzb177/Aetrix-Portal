@@ -49,6 +49,11 @@ _TOKEN_MIN_REMAIN_SECONDS: float = 120
 _cache_lock = threading.Lock()
 _cached_token: str | None = None
 _cached_expire_at: float = 0.0  # time.monotonic() 基准
+# P1 修复（审查）：播放 token 按 SA 轮换，不再永远用第一个 SA。
+# 进程启动时随机起点，避免多 worker 进程同时从第 0 个 SA 开始。
+import random as _random
+_sa_rr_index = _random.randint(0, 1000000)
+_sa_rr_lock = threading.Lock()
 
 
 def _load_drive_changes() -> ModuleType:
@@ -99,17 +104,26 @@ def _read_sa_file(path: str) -> dict[str, Any] | None:
 
 
 def _pick_sa() -> dict[str, Any] | None:
-    """从 drive_changes 发现的 SA 文件中读取第一个可用的 SA 字典。
+    """从 drive_changes 发现的 SA 文件中轮询取一个可用的 SA 字典。
 
-    复用 ``drive_changes._discover_sa_files()`` 拿到 SA 文件列表，再逐个读取
-    JSON 内容；全部不可读时返回 None。
+    P1 修复（审查）：此前永远取第一个可用 SA，全站播放回源流量压在单个 SA
+    配额上（与"100 子账号轮询"的设计相悖）。现按 round-robin 轮换，
+    与 drive_changes._next_sa 同口径。
     """
+    global _sa_rr_index
     try:
         drive_changes = _load_drive_changes()
-        sa_files = drive_changes._discover_sa_files()
+        sa_files = drive_changes._discover_sa_files() or []
     except Exception:
         return None
-    for entry in sa_files or ():
+    if not sa_files:
+        return None
+    # 轮询起点：每次调用换一个 SA
+    with _sa_rr_lock:
+        start = _sa_rr_index % len(sa_files)
+        _sa_rr_index += 1
+    for offset in range(len(sa_files)):
+        entry = sa_files[(start + offset) % len(sa_files)]
         try:
             sa = entry if _is_sa_dict(entry) else _read_sa_file(entry)
         except Exception:

@@ -563,7 +563,10 @@ def _open_remote_stream(url: str, headers: Optional[dict], offset: int):
     forward.setdefault("User-Agent", REMOTE_UA)
     if offset > 0:
         forward["Range"] = f"bytes={offset}-"
-    client = httpx.Client(timeout=httpx.Timeout(30.0, read=None), follow_redirects=False)
+    client = httpx.Client(
+        # P1 修复（审查）：此前 read=None 禁用读超时，源站中途卡住（不发送也不断开）
+        # 时 iter_bytes 永久阻塞，单线程 worker 整个缓存管线停摆。现设块间空闲上限 60s。
+        timeout=httpx.Timeout(30.0, read=60.0), follow_redirects=False)
     resp = None
     try:
         current = url
