@@ -459,12 +459,16 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
         db, user, reward, "checkin",
         description, f"checkin:{today.strftime('%Y%m%d')}",
     )
-    # C1 活力值：公益服用户签到恢复 1 点活力（上限钳制）
+    # C1 活力值：公益服用户签到恢复活力（受每日免费获取上限钳制）
     vitality_gained = 0
     if is_welfare:
         try:
-            if _vitality.get_vitality_config(db)["enabled"]:
-                vitality_gained = _vitality._add_vitality(db, user_id, 1, "checkin")
+            cfg = _vitality.get_vitality_config(db)
+            if cfg["enabled"]:
+                limit = int(cfg.get("daily_gain_limit", 0) or 0)
+                gained = _vitality.get_today_free_gain(db, user_id) if limit > 0 else 0
+                if limit <= 0 or gained < limit:
+                    vitality_gained = _vitality._add_vitality(db, user_id, 1, "checkin")
         except Exception:
             logger.exception("checkin vitality restore failed for user %s", user_id)
     db.commit()

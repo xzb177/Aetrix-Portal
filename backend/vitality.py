@@ -1,9 +1,9 @@
 from __future__ import annotations
 import logging
 import threading
-from datetime import date
+from datetime import date, datetime
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import func, case, text
 from sqlalchemy.orm import Session
 from backend import models
 from backend.integrations import store
@@ -15,6 +15,10 @@ CONFIG_MAX = "vitality_max"
 CONFIG_DAILY_COST = "vitality_daily_cost"
 CONFIG_LIMIT_THRESHOLD = "vitality_limit_threshold"
 CONFIG_POINT_COST = "vitality_point_cost"
+# 新增：观影奖励 / 每日免费获取上限 / 归档钳制
+CONFIG_WATCH_REWARD = "vitality_watch_reward"
+CONFIG_DAILY_GAIN_LIMIT = "vitality_daily_gain_limit"
+CONFIG_ARCHIVE_CLAMP = "vitality_archive_clamp"
 
 VITALITY_DEFAULTS = {
     CONFIG_ENABLED: "true",
@@ -22,16 +26,25 @@ VITALITY_DEFAULTS = {
     CONFIG_DAILY_COST: "1",
     CONFIG_LIMIT_THRESHOLD: "3",
     CONFIG_POINT_COST: "10",
+    CONFIG_WATCH_REWARD: "1",
+    CONFIG_DAILY_GAIN_LIMIT: "2",
+    CONFIG_ARCHIVE_CLAMP: "3",
 }
+
+# 每日免费获取计入上限的 reason（付费 recharge / 管理员 admin_grant 不计入）
+FREE_GAIN_REASONS = ("checkin", "watch_reward")
+
 
 def _raw(db: Session, key: str) -> str:
     return store.get_value(db, key, "")
+
 
 def _cfg_bool(db, key, default):
     raw = _raw(db, key)
     if raw is None or str(raw).strip() == "":
         return default
     return str(raw).strip().lower() == "true"
+
 
 def _cfg_int(db, key, default):
     raw = _raw(db, key)
@@ -42,6 +55,59 @@ def _cfg_int(db, key, default):
     except (TypeError, ValueError):
         return default
 
+
+def validate_vitality_config(values: dict) -> dict:
+    """校验活力值配置：返回 {key: error_msg}，空 dict 表示全部合法。
+
+    规则：
+    - max > 0；daily_cost >= 0；limit_threshold >= 0 且 <= max
+    - point_cost > 0；watch_reward >= 0；daily_gain_limit >= 0
+    - archive_clamp >= 0 且 <= max
+    """
+    errors = {}
+
+    def _as_int(v):
+        try:
+            return int(float(str(v).strip()))
+        except (TypeError, ValueError, AttributeError):
+            return None
+
+    max_v = _as_int(values.get(CONFIG_MAX, VITALITY_DEFAULTS[CONFIG_MAX]))
+    if max_v is None or max_v <= 0:
+        errors[CONFIG_MAX] = "活力上限必须是正整数"
+        max_v = int(VITALITY_DEFAULTS[CONFIG_MAX])
+
+    cost = _as_int(values.get(CONFIG_DAILY_COST, VITALITY_DEFAULTS[CONFIG_DAILY_COST]))
+    if cost is None or cost < 0:
+        errors[CONFIG_DAILY_COST] = "每日扣减不能为负数"
+
+    threshold = _as_int(values.get(CONFIG_LIMIT_THRESHOLD, VITALITY_DEFAULTS[CONFIG_LIMIT_THRESHOLD]))
+    if threshold is None or threshold < 0:
+        errors[CONFIG_LIMIT_THRESHOLD] = "观影阈值不能为负数"
+    elif threshold > max_v:
+        errors[CONFIG_LIMIT_THRESHOLD] = "观影阈值不能超过活力上限"
+
+    point_cost = _as_int(values.get(CONFIG_POINT_COST, VITALITY_DEFAULTS[CONFIG_POINT_COST]))
+    if point_cost is None or point_cost <= 0:
+        errors[CONFIG_POINT_COST] = "续活兑换率必须是正整数"
+
+    watch_reward = _as_int(values.get(CONFIG_WATCH_REWARD, VITALITY_DEFAULTS[CONFIG_WATCH_REWARD]))
+    if watch_reward is None or watch_reward < 0:
+        errors[CONFIG_WATCH_REWARD] = "观影奖励不能为负数"
+
+    gain_limit = _as_int(values.get(CONFIG_DAILY_GAIN_LIMIT, VITALITY_DEFAULTS[CONFIG_DAILY_GAIN_LIMIT]))
+    if gain_limit is None or gain_limit < 0:
+        errors[CONFIG_DAILY_GAIN_LIMIT] = "每日获取上限不能为负数"
+
+    archive_clamp = _as_int(values.get(CONFIG_ARCHIVE_CLAMP, VITALITY_DEFAULTS[CONFIG_ARCHIVE_CLAMP]))
+    if archive_clamp is None or archive_clamp < 0:
+        errors[CONFIG_ARCHIVE_CLAMP] = "归档钳制不能为负数"
+    elif archive_clamp > max_v:
+        errors[CONFIG_ARCHIVE_CLAMP] = "归档钳制不能超过活力上限"
+
+    return errors
+
+
 def get_vitality_config(db: Session) -> dict:
     return {
         "enabled": _cfg_bool(db, CONFIG_ENABLED, True),
@@ -49,7 +115,11 @@ def get_vitality_config(db: Session) -> dict:
         "daily_cost": _cfg_int(db, CONFIG_DAILY_COST, 1),
         "limit_threshold": _cfg_int(db, CONFIG_LIMIT_THRESHOLD, 3),
         "point_cost": _cfg_int(db, CONFIG_POINT_COST, 10),
+        "watch_reward": _cfg_int(db, CONFIG_WATCH_REWARD, 1),
+        "daily_gain_limit": _cfg_int(db, CONFIG_DAILY_GAIN_LIMIT, 2),
+        "archive_clamp": _cfg_int(db, CONFIG_ARCHIVE_CLAMP, 3),
     }
+
 
 def vitality_status(db: Session, user) -> dict:
     cfg = get_vitality_config(db)
@@ -61,6 +131,7 @@ def vitality_status(db: Session, user) -> dict:
         "can_play": (not cfg["enabled"]) or (not getattr(user, "is_welfare", False)) or v >= cfg["limit_threshold"],
         "suspended": v <= 0,
     }
+
 
 def ensure_can_play(db: Session, user) -> None:
     cfg = get_vitality_config(db)
@@ -75,23 +146,118 @@ def ensure_can_play(db: Session, user) -> None:
         return
     raise HTTPException(status_code=403, detail=f"活力值不足（{v}/{cfg['limit_threshold']}），签到或用积分续活力后可继续观影")
 
+
 def _add_vitality(db: Session, user_id: int, delta: int, reason: str) -> int:
+    """原子增减活力值：单条 UPDATE 完成加减 + 钳制到 [0, max]，返回钳制后的值。
+
+    旧实现是「UPDATE 加减 → SELECT 读回 → 越界再 UPDATE」三步，
+    并发下两个线程可能都读到钳制前的值导致最终越界。现在用 CASE
+    在一条语句里完成，数据库保证原子性。
+    """
     cfg = get_vitality_config(db)
     max_vitality = int(cfg.get("max", VITALITY_DEFAULTS[CONFIG_MAX]))
-    db.query(models.WebUser).filter(models.WebUser.id == user_id).update(
-        {models.WebUser.vitality: func.coalesce(models.WebUser.vitality, 0) + delta},
-        synchronize_session="fetch",
+
+    # PostgreSQL / SQLite 都支持的写法：用 RETURNING 取回钳制后的值
+    stmt = text(
+        "UPDATE web_users SET vitality = CASE "
+        "WHEN COALESCE(vitality, 0) + :delta < 0 THEN 0 "
+        "WHEN COALESCE(vitality, 0) + :delta > :max_v THEN :max_v "
+        "ELSE COALESCE(vitality, 0) + :delta END "
+        "WHERE id = :uid "
+        "RETURNING vitality"
     )
-    row = db.query(models.WebUser.vitality).filter(models.WebUser.id == user_id).first()
-    current = int(row[0]) if row and row[0] is not None else 0
-    final = max(0, min(max_vitality, current))
-    if final != current:
+    try:
+        row = db.execute(stmt, {"delta": delta, "max_v": max_vitality, "uid": user_id}).fetchone()
+        final = int(row[0]) if row and row[0] is not None else 0
+    except Exception:
+        # 极少数方言不支持 RETURNING：回退到旧的两步写法
+        logger.warning("RETURNING not supported, fallback to two-step vitality update")
         db.query(models.WebUser).filter(models.WebUser.id == user_id).update(
-            {models.WebUser.vitality: final},
+            {models.WebUser.vitality: func.coalesce(models.WebUser.vitality, 0) + delta},
             synchronize_session="fetch",
         )
+        row = db.query(models.WebUser.vitality).filter(models.WebUser.id == user_id).first()
+        current = int(row[0]) if row and row[0] is not None else 0
+        final = max(0, min(max_vitality, current))
+        if final != current:
+            db.query(models.WebUser).filter(models.WebUser.id == user_id).update(
+                {models.WebUser.vitality: final},
+                synchronize_session="fetch",
+            )
     db.add(models.VitalityLog(user_id=user_id, delta=delta, balance_after=final, reason=reason))
     return final
+
+
+def get_today_free_gain(db: Session, user_id: int) -> int:
+    """今天通过免费途径（签到/观影奖励）已获得的活力值。"""
+    today_start = datetime.combine(date.today(), datetime.min.time())
+    total = (
+        db.query(func.coalesce(func.sum(models.VitalityLog.delta), 0))
+        .filter(
+            models.VitalityLog.user_id == user_id,
+            models.VitalityLog.delta > 0,
+            models.VitalityLog.reason.in_(FREE_GAIN_REASONS),
+            models.VitalityLog.created_at >= today_start,
+        )
+        .scalar()
+    )
+    return int(total or 0)
+
+
+def award_watch_reward(db: Session, user_id: int) -> int:
+    """观影奖励：按 vitality_watch_reward 发放，受每日免费获取上限钳制。
+
+    返回实际发放的点数（0 表示未发放：功能关闭 / 已达上限 / 非公益服用户）。
+    幂等性由调用方保证（每次有效观影调用一次）。
+    """
+    cfg = get_vitality_config(db)
+    if not cfg["enabled"]:
+        return 0
+    reward = int(cfg.get("watch_reward", 0) or 0)
+    if reward <= 0:
+        return 0
+    # 非公益服用户不参与活力值体系
+    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
+    if not user or not getattr(user, "is_welfare", False):
+        return 0
+    limit = int(cfg.get("daily_gain_limit", 0) or 0)
+    if limit > 0:
+        gained = get_today_free_gain(db, user_id)
+        remaining = limit - gained
+        if remaining <= 0:
+            return 0
+        reward = min(reward, remaining)
+    try:
+        _add_vitality(db, user_id, reward, "watch_reward")
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("award_watch_reward failed for user %s", user_id)
+        return 0
+    return reward
+
+
+def clamp_on_archive(db: Session, user_id: int) -> int:
+    """归档/退群时把活力值钳制到 vitality_archive_clamp（只降不升）。
+
+    返回钳制后的活力值。
+    """
+    cfg = get_vitality_config(db)
+    clamp = int(cfg.get("archive_clamp", 0) or 0)
+    row = db.query(models.WebUser.vitality).filter(models.WebUser.id == user_id).first()
+    current = int(row[0]) if row and row[0] is not None else 0
+    if current <= clamp:
+        return current
+    delta = clamp - current  # 负数
+    try:
+        final = _add_vitality(db, user_id, delta, "archive_clamp")
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("clamp_on_archive failed for user %s", user_id)
+        return current
+    return final
+
 
 _DEDUCT_BATCH = 500
 
@@ -212,4 +378,6 @@ def start_vitality_scheduler() -> bool:
 __all__ = [
     "VITALITY_DEFAULTS", "get_vitality_config", "vitality_status",
     "ensure_can_play", "daily_deduct", "claim_daily_deduct", "start_vitality_scheduler",
+    "validate_vitality_config", "award_watch_reward", "clamp_on_archive",
+    "get_today_free_gain", "FREE_GAIN_REASONS",
 ]

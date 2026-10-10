@@ -792,7 +792,7 @@ class VitalityLog(Base):
     user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False, index=True)
     delta = Column(Integer, nullable=False)  # 正数恢复 / 负数扣减
     balance_after = Column(Integer, default=0)  # 变动后活力值
-    reason = Column(String(30), default='system')  # daily_deduct, checkin, recharge, admin_grant, admin_deduct
+    reason = Column(String(30), default='system')  # daily_deduct, checkin, watch_reward, recharge, admin_grant, admin_deduct, archive_clamp
     created_at = Column(DateTime, default=datetime.now)
 
     user = relationship("WebUser")

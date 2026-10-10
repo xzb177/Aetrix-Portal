@@ -210,9 +210,11 @@ ECONOMY_CONFIG_KEYS = {
     # 流媒体加速（v2.49.0）：一个开关 + 一个域名，点保存即生效（域名守卫侧最长 60 秒）
     "stream_accel_enabled": "bool",
     "stream_accel_domain": "str",
-    # 活力值（C1 竞品借鉴）：上限/每日扣减/观影阈值/积分兑换率，全部可配
+    # 活力值（C1 竞品借鉴）：上限/每日扣减/观影阈值/积分兑换率/观影奖励/每日获取上限/归档钳制，全部可配
     "vitality_enabled": "bool", "vitality_max": "int", "vitality_daily_cost": "int",
     "vitality_limit_threshold": "int", "vitality_point_cost": "int",
+    "vitality_watch_reward": "int", "vitality_daily_gain_limit": "int",
+    "vitality_archive_clamp": "int",
     # C3 流水审计：积分流水 hash 链总开关（默认开；关闭后新流水不写 hash）
     "points_audit_enabled": "bool",
     # 播放预热（点播即读文件头）：总开关/预热字节/并发上限/去重窗口/超时/分块
@@ -234,6 +236,35 @@ _CHECKIN_INT_RANGES = {
     "checkin_penalty_min": (0, 100000),
     "checkin_penalty_max": (0, 100000),
 }
+
+
+def _validate_vitality_settings(db: Session, settings: dict) -> None:
+    """活力值配置校验：整数、非负、阈值不超上限（非法直接 400，此时尚未写库）"""
+    from backend import vitality as _vitality
+
+    vitality_keys = [k for k in settings if k.startswith("vitality_")]
+    if not vitality_keys:
+        return
+
+    def _final(key: str) -> str:
+        # 本次提交了非空值 → 用它；提交空值视为删除该行 → 用默认值；没提交 → 用库里现有的，没有则用默认值
+        if key in settings:
+            v = str(settings[key] if settings[key] is not None else "").strip()
+            if v:
+                return v
+            return _vitality.VITALITY_DEFAULTS.get(key, "")
+        row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
+        if row and (row.value or "").strip():
+            return (row.value or "").strip()
+        return _vitality.VITALITY_DEFAULTS.get(key, "")
+
+    merged = {k: _final(k) for k in _vitality.VITALITY_DEFAULTS}
+    errors = _vitality.validate_vitality_config(merged)
+    # 只报错本次请求实际提交的 key，避免存量合法值被无关请求挡住
+    relevant = {k: v for k, v in errors.items() if k in settings}
+    if relevant:
+        first_key = next(iter(relevant))
+        raise HTTPException(status_code=400, detail=relevant[first_key])
 
 
 def _validate_checkin_settings(db: Session, settings: dict) -> None:
@@ -310,6 +341,7 @@ def economy_update_settings(
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
     _validate_checkin_settings(db, request.settings)
+    _validate_vitality_settings(db, request.settings)
     # int/bool 键类型与范围校验（非法 400，尚未写库）；空字符串=未设置，删行回退默认值
     from backend import config_schema
     typed: dict = {}
