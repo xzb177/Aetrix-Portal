@@ -1608,3 +1608,16 @@ def save_douban_config(
     )
     db.commit()
     return {"success": True, "enabled": enabled, "min_interval": iv}
+
+
+@admin_emby_router.get("/scrape/scheduler/status")
+def get_scheduler_status(
+    staff: base_models.WebUser = Depends(require_staff),
+):
+    """统一任务调度器状态（v2.54.1）：一次看到扫描队列 + 刮削积压 + 让路/熔断状态。
+
+    给管理后台"后台任务"统一视图用。
+    """
+    from backend.emby_server import task_scheduler as _ts
+
+    return {"success": True, "status": _ts.get_unified_status()}
