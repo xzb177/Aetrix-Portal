@@ -898,7 +898,7 @@ onActivated(() => {
            点击与追新日历一致走 Rex deep link；没有数据整段不渲染 -->
       <section v-if="recentCards.length" class="recent au-anim-up">
         <div class="section-label">
-          <span class="section-title">{{ recentHasToday ? '今日入库' : '本周入库' }}</span>
+          <span class="section-title">{{ recentHasToday ? '今日上映' : '本周上映' }}</span>
           <RouterLink to="/calendar" class="section-more">
             追新日历
             <ChevronRight :size="14" />
@@ -937,7 +937,7 @@ onActivated(() => {
            点击与「本周入库」一致走 Rex deep link -->
       <section v-if="resumeCards.length" class="resume au-anim-up">
         <div class="section-label">
-          <span class="section-title">继续观看</span>
+          <span class="section-title">上次看到一半的</span>
         </div>
         <div class="resume-list">
           <a
@@ -985,7 +985,7 @@ onActivated(() => {
       <!-- ④ 正在播放：有会话才出现（一条状态，不是管理清单）；完整清单在个人中心 -->
       <section v-if="sessions.length" class="playing au-anim-up">
         <div class="section-label">
-          <span class="section-title">正在播放</span>
+          <span class="section-title">正在放映</span>
           <span class="section-hint">{{ sessions.length }} 个会话</span>
         </div>
         <div class="playing-list">
@@ -1035,7 +1035,7 @@ onActivated(() => {
 
       <!-- ⑤ 进行中：自己提交的求片 / 工单处理到哪了 -->
       <div class="section-label">
-        <span class="section-title">进行中</span>
+        <span class="section-title">等片中</span>
       </div>
       <section v-if="loading" class="todo-card" aria-hidden="true">
         <div class="au-skeleton sk-panel-row"></div>
@@ -1055,7 +1055,7 @@ onActivated(() => {
 
       <!-- ⑥ 帮助中心：纯文字列表 + 发丝分隔线，不再有图标方块 -->
       <div class="section-label">
-        <span class="section-title">帮助中心</span>
+        <span class="section-title">放映指南</span>
       </div>
       <nav class="help-list" aria-label="帮助中心">
         <RouterLink to="/profile" class="help-row">
@@ -1624,9 +1624,9 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
 
 .poster-row {
   display: flex;
-  gap: 0.875rem;
-  margin: 0 calc(var(--gutter) * -1);
-  padding: 0 var(--gutter) 0.25rem;
+  gap: 0.75rem;
+  margin: -0.75rem calc(var(--gutter) * -1) 0;
+  padding: 0.75rem var(--gutter) 0.25rem;
   scroll-padding-inline: var(--gutter);
   overflow-x: auto;
   overscroll-behavior-x: contain;
@@ -1646,6 +1646,22 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
   color: inherit;
   text-decoration: none;
   scroll-snap-align: start;
+}
+
+@media (min-width: 1024px) {
+  .poster-card {
+    width: 144px;
+  }
+}
+
+.poster-card:hover .poster-name {
+  color: var(--au-text-1);
+}
+
+.poster-card:focus-visible {
+  outline: 2px solid var(--au-primary);
+  outline-offset: 2px;
+  border-radius: var(--au-r-sm);
 }
 
 .poster-frame {
@@ -1709,7 +1725,7 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
   overflow: hidden;
   font-family: var(--au-font-serif);
   font-size: 0.9375rem;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1.35;
   color: #f3ede4;
   overflow-wrap: anywhere;
@@ -2204,4 +2220,5 @@ section.todo-card[aria-hidden='true'] { padding: 1rem; }
   }
 }
 </style>
+
 
