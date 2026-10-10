@@ -243,6 +243,18 @@ async def refund_order(
                     result["subscription_end"] = (
                         subscription.end_date.isoformat() if subscription.end_date else None
                     )
+                # P1 修复（审查）：积分购买的订阅订单，退款时只回滚了天数、
+                # 当初扣的积分没退（用户积分与会员两失）。按账本查实际扣款退回。
+                if (order.payment_method or "") == "points":
+                    from backend.api.economy import _add_points
+                    spent = _ledger_entry(db, user.id, f"subscription_points:{order_id}",
+                                          "subscription_buy")
+                    refund_pts = abs(int(spent.amount)) if spent else 0
+                    if refund_pts > 0:
+                        _add_points(db, user, refund_pts, "refund",
+                                    f"订阅退款退回积分（订单 {order_id}）",
+                                    f"refund:{order_id}")
+                        result["revoked_points"] = -refund_pts
 
         # 状态与时间已由上面那次条件 UPDATE 原子写入，这里让当前事务里的 ORM 对象跟上
         order.status = "refunded"

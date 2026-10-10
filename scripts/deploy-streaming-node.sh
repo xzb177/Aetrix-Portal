@@ -67,8 +67,20 @@ read -rp "权重（默认 100，多节点按权重分流）: " NODE_WEIGHT
 NODE_WEIGHT="${NODE_WEIGHT:-100}"
 
 info "从主服务拉取配置包…"
+# P1 安全加固：bundle 下发只接受 HMAC 签名头（有时效+防重放），不再接受静态
+# X-Panel-Key。签名规范见 backend/node_auth.py：canonical = ts\nonce\nMETHOD\npath。
+_bundle_sign() {
+  local ts nonce canonical
+  ts="$(date +%s)"
+  nonce="$(openssl rand -hex 16)"
+  canonical="$(printf '%s\n%s\n%s\n%s' "$ts" "$nonce" "GET" "/api/admin/stream-nodes/bundle")"
+  printf '%s\n%s\n%s' "$ts" "$nonce" \
+    "$(printf '%s' "$canonical" | openssl dgst -sha256 -hmac "$PANEL_KEY" | awk '{print $2}')"
+}
+read -r _BTS _BNO _BSG < <(_bundle_sign)
 BUNDLE="$(curl -fsSL -m 30 "$MAIN_URL/api/admin/stream-nodes/bundle" \
-  -H "X-Panel-Key: $PANEL_KEY")" || fatal "拉取失败：检查主服务地址/面板密钥"
+  -H "X-Panel-Ts: $_BTS" -H "X-Panel-Nonce: $_BNO" -H "X-Panel-Sign: $_BSG")" \
+  || fatal "拉取失败：检查主服务地址/节点密钥（需与主服务 NODE_SHARED_SECRET 一致）"
 echo "$BUNDLE" | jq -e '.secret_key' >/dev/null || fatal "配置包格式错误"
 
 SECRET_KEY="$(echo "$BUNDLE" | jq -r '.secret_key')"
