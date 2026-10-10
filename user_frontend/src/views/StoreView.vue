@@ -1558,7 +1558,9 @@ p.coupon-error {
 }
 
 
-.store-redeem { opacity: .85; }
+.store-redeem {
+  margin-top: 8px;
+}
 
 .store-redeem button.redeem-toggle {
   display: flex;
