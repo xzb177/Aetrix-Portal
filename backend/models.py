@@ -1596,6 +1596,8 @@ class TgBindCode(Base):
     expires_at = Column(DateTime, nullable=False)
     used_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.now)
+    # 本码生效期间全站累计的「猜错绑定码」次数；达到上限即作废（防多 TG 账号分布式枚举）
+    fail_count = Column(Integer, default=0)
 
 
 class ChatPointsLog(Base):

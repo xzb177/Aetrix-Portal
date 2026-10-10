@@ -247,10 +247,16 @@ def _validate_vitality_settings(db: Session, settings: dict) -> None:
         return
 
     def _final(key: str) -> str:
+        # 本次提交了非空值 → 用它；提交空值视为删除该行 → 用默认值；没提交 → 用库里现有的，没有则用默认值
         if key in settings:
-            return str(settings[key] if settings[key] is not None else "").strip()
+            v = str(settings[key] if settings[key] is not None else "").strip()
+            if v:
+                return v
+            return _vitality.VITALITY_DEFAULTS.get(key, "")
         row = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-        return (row.value or "").strip() if row else ""
+        if row and (row.value or "").strip():
+            return (row.value or "").strip()
+        return _vitality.VITALITY_DEFAULTS.get(key, "")
 
     merged = {k: _final(k) for k in _vitality.VITALITY_DEFAULTS}
     errors = _vitality.validate_vitality_config(merged)
@@ -336,6 +342,17 @@ def economy_update_settings(
                 raise HTTPException(status_code=400, detail=str(e))
     _validate_checkin_settings(db, request.settings)
     _validate_vitality_settings(db, request.settings)
+    # int/bool 键类型与范围校验（非法 400，尚未写库）；空字符串=未设置，删行回退默认值
+    from backend import config_schema
+    typed: dict = {}
+    for key, value in request.settings.items():
+        spec = config_schema.economy_spec(ECONOMY_CONFIG_KEYS.get(key, ""), key)
+        if spec is None:
+            continue
+        try:
+            typed[key] = config_schema.normalize(key, spec, value)
+        except config_schema.ConfigValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     changed = {}
     for key, value in request.settings.items():
         if key not in ECONOMY_CONFIG_KEYS:
@@ -343,6 +360,13 @@ def economy_update_settings(
         if ECONOMY_CONFIG_KEYS[key] == "secret" and (not value or value == "******"):
             continue
         config = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
+        if key in typed:
+            if typed[key] is None:
+                if config:
+                    db.delete(config)
+                changed[key] = ""
+                continue
+            value = typed[key]
         if config:
             config.value = str(value)
         else:
