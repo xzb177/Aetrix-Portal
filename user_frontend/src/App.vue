@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { RouterView, useRoute, useRouter } from 'vue-router'
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import Toast from '@/components/Toast.vue'
 import AppHeader from '@/components/AppHeader.vue'
 import AppDock from '@/components/AppDock.vue'
+import TgBindModal from '@/components/TgBindModal.vue'
 import { useToast } from '@/composables/useToast'
 import { useUserStore } from '@/stores/user'
 import { refreshEmbyBaseUrl } from '@/api/emby'
+import { tgApi } from '@/api/tg'
 
 const { messages, remove, warning } = useToast()
 const userStore = useUserStore()
@@ -52,6 +54,36 @@ function onTgNotBound(e: Event) {
   setTimeout(() => router.push('/profile'), 600)
 }
 
+// ===== 全局 TG 绑定自动弹窗 =====
+// 新用户注册后（或任何未绑定用户进入应用时），自动弹出绑定弹窗。
+// 这是 LoginView → /tg-bind 页面跳转之外的第二道保险：即使跳转被绕过，
+// 用户依然会看到弹窗。已绑定用户永远不会弹。
+const showGlobalTgBind = ref(false)
+const TG_GUIDE_SHOWN_KEY = 'tg_bind_guide_shown'
+
+async function checkTgBindGuide() {
+  // 未登录不查
+  if (!userStore.isLoggedIn) return
+  // 登录页、/tg-bind 引导页、播放页不打扰
+  if (route.name === 'login' || route.path === '/tg-bind' || route.path.startsWith('/watch')) return
+  // 每个标签页会话只自动弹一次，避免刷新反复打扰
+  if (sessionStorage.getItem(TG_GUIDE_SHOWN_KEY)) return
+  try {
+    const st = await tgApi.status()
+    // 已绑定、或后端没要求绑定、或引导被管理员关闭 → 不弹
+    if (!st.required || st.bound || !st.guide_enabled) return
+    sessionStorage.setItem(TG_GUIDE_SHOWN_KEY, '1')
+    showGlobalTgBind.value = true
+  } catch {
+    // 状态拉取失败：静默，不锁死用户
+  }
+}
+
+function handleGlobalTgBound() {
+  // 绑定成功后：标记已展示，下次不再自动弹（st.bound=true 也不会再弹，双保险）
+  sessionStorage.setItem(TG_GUIDE_SHOWN_KEY, '1')
+}
+
 onMounted(() => {
   window.addEventListener('tg-not-bound', onTgNotBound)
   userStore.init()
@@ -63,10 +95,34 @@ onMounted(() => {
   if (userStore.isLoggedIn) {
     userStore.fetchUser().catch(() => {})
   }
+  // TG 绑定引导：延迟 1.5s 等首屏稳定后检查，避免与首屏加载抢资源
+  setTimeout(() => { checkTgBindGuide() }, 1500)
 })
 onUnmounted(() => {
   window.removeEventListener('tg-not-bound', onTgNotBound)
 })
+
+// 登录状态变化（注册/登录成功）时检查一次：覆盖 LoginView 跳转被绕过的场景
+watch(
+  () => userStore.isLoggedIn,
+  (loggedIn) => {
+    if (loggedIn) {
+      setTimeout(() => { checkTgBindGuide() }, 1500)
+    } else {
+      // 登出后清除标记，下次登录重新评估
+      sessionStorage.removeItem(TG_GUIDE_SHOWN_KEY)
+      showGlobalTgBind.value = false
+    }
+  },
+)
+// 路由切换时也检查一次（比如注册后直接落在首页的场景）
+watch(
+  () => route.path,
+  () => {
+    // 延迟到路由稳定后
+    setTimeout(() => { checkTgBindGuide() }, 800)
+  },
+)
 </script>
 
 <template>
@@ -80,6 +136,8 @@ onUnmounted(() => {
     </RouterView>
     <AppDock v-if="showChrome" />
     <Toast :messages="messages" @remove="remove" />
+    <!-- 全局 TG 绑定自动弹窗：新用户注册后自动弹出，已绑定不弹 -->
+    <TgBindModal v-model="showGlobalTgBind" @bound="handleGlobalTgBound" />
   </div>
 </template>
 
