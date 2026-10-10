@@ -52,12 +52,17 @@ def send_packet(
     sender: models.WebUser,
     total_amount: int,
     total_count: int,
+    idempotency_key: str | None = None,
 ) -> models.RedPacket:
     """发红包
 
     校验：金额>0，个数>0，金额>=个数（每人至少1分），余额充足（含手续费）
     频率：7天内发送次数上限（redpacket_send_limit_7d，0=不限）
     手续费：按 redpacket_fee_pct 比例额外扣除，记 redpacket_fee 账本
+
+    幂等：idempotency_key（如 tg:<update_id>）有唯一约束；TG poller
+    at-least-once 重放时，第二次 insert 撞唯一约束 → 回滚并返回已存在的包，
+    不再重复扣款（P1 修复）。
     """
     if total_amount <= 0:
         raise ValueError("红包金额必须大于0")
@@ -67,6 +72,18 @@ def send_packet(
         raise ValueError("红包金额不能小于个数（每人至少1分）")
     if total_count > 100:
         raise ValueError("红包个数不能超过100")
+
+    # 幂等预检（必须在扣款/频率检查之前）：SQLite 存量表加不上唯一约束
+    #（create_all 不改旧表），先查一次；PG/MySQL 另有库级唯一约束防并发竞态
+    #（下方的 IntegrityError 分支）。
+    if idempotency_key:
+        existing = db.query(models.RedPacket).filter(
+            models.RedPacket.idempotency_key == idempotency_key
+        ).first()
+        if existing is not None:
+            logger.info("红包重放幂等命中（预检）: key=%s packet_id=%s",
+                        idempotency_key, existing.id)
+            return existing
 
     # 发送频率检查
     send_limit = _get_int_config(db, "redpacket_send_limit_7d", 20)
@@ -112,9 +129,21 @@ def send_packet(
         remaining_amount=total_amount,
         remaining_count=total_count,
         expires_at=datetime.now() + timedelta(hours=PACKET_TTL_HOURS),
+        idempotency_key=idempotency_key,
     )
     db.add(packet)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # 幂等重放：同一 idempotency_key 的包已存在 → 回滚本次扣款，返回已存在的包
+        db.rollback()
+        existing = db.query(models.RedPacket).filter(
+            models.RedPacket.idempotency_key == idempotency_key
+        ).first() if idempotency_key else None
+        if existing is not None:
+            logger.info("红包重放幂等命中: key=%s packet_id=%s", idempotency_key, existing.id)
+            return existing
+        raise
     db.refresh(packet)
     logger.info("红包发出: sender=%s amount=%s count=%s fee=%s",
                 sender.id, total_amount, total_count, fee)
