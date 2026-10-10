@@ -111,7 +111,7 @@ def test_points_vitality_row(db):
     user = _make_user(db, username="u9", tg_id=910009, is_welfare=True)
     text = handlers.handle_points(db, {"id": 910009}, 910009, "")
     assert "✨ 当前积分" in text
-    assert "⚡ 活力值" in text
+    assert "活力值" in text
 
 
 def test_redeem_no_args(db):

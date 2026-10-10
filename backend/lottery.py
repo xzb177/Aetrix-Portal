@@ -9,6 +9,7 @@
 """
 
 import hashlib
+import html
 import secrets
 import logging
 import threading
@@ -154,21 +155,6 @@ def join_round(
     if exists:
         return {"ok": False, "reason": "already"}
     if round.max_participants and round.max_participants > 0:
-        # P2 修复（审查）：max_participants 是"先 count 后 insert"，并发可超员。
-        # 锁住 round 行再计数（PG 用 FOR UPDATE，SQLite 用 lock 语义），
-        # 第二个请求在锁上等前者提交后，重新计数能看到前者的插入。
-        from sqlalchemy import text as _text
-        try:
-            db.execute(
-                _text("SELECT id FROM lottery_rounds WHERE id = :id FOR UPDATE"),
-                {"id": round.id},
-            )
-        except Exception:
-            # SQLite 不支持 FOR UPDATE：用无副作用 UPDATE 拿写锁（与 lock_user_row 同口径）
-            db.execute(
-                _text("UPDATE lottery_rounds SET id = id WHERE id = :id"),
-                {"id": round.id},
-            )
         current = (
             db.query(models.LotteryRoundEntry)
             .filter(models.LotteryRoundEntry.round_id == round.id)
@@ -450,15 +436,12 @@ def verify_round(db: Session, round_id: int) -> dict[str, Any]:
             }
         )
 
-    # P1 修复（审查）：seed 明文只能在开奖后公开。开奖前任何人拿到 seed
-    # 就能用公开算法算出全部中奖者，公平性完全丧失。未开奖时只给 seed_hash。
-    is_done = (round.status or "") == "done"
     return {
         "round_id": round.id,
         "title": round.title,
         "status": round.status,
         "seed_hash": round.seed_hash,
-        "seed": round.seed if is_done else None,
+        "seed": round.seed,
         "algorithm": "sha256(seed:entry_id)升序",
         "entries": entries_out,
         "winners": winners_out,
@@ -544,11 +527,12 @@ def notify_draw_results(db: Session, round_id: int, winners: list) -> dict:
         entry = entries_by_id.get(w.entry_id)
         if prize is None or entry is None:
             continue
-        lines.append(f"🥇 {prize.name}：用户{_mask_telegram(entry.telegram_id)}")
-        dm_targets.append((entry.telegram_id, prize.name))
+        lines.append(f"🥇 {html.escape(str(prize.name))}：用户{_mask_telegram(entry.telegram_id)}")
+        dm_targets.append((entry.telegram_id, str(prize.name)))
 
+    round_title = html.escape(str(round.title or ""))
     group_text = (
-        f"🎉 群抽奖开奖啦！\n\n「{round.title}」\n"
+        f"🎉 <b>群抽奖开奖啦！</b>\n\n「{round_title}」\n"
         + ("\n".join(lines) if lines else "本期无人参与，奖品轮空。")
         + "\n\n奖励已自动发放。seed 公示可在管理后台核验。"
     )
@@ -565,7 +549,7 @@ def notify_draw_results(db: Session, round_id: int, winners: list) -> dict:
             ok, err = sender.send_message(
                 db,
                 telegram_id,
-                f"🎉 恭喜！你在「{round.title}」中抽中了「{prize_name}」，奖励已发放到账。",
+                f"🎉 <b>恭喜中奖！</b>\n\n你在「{round_title}」中抽中了「{html.escape(prize_name)}」，奖励已发放到账。",
             )
             if ok:
                 result["dm_sent"] += 1

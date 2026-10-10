@@ -52,14 +52,21 @@ def _call(db, method: str, payload: dict) -> tuple[bool, str | None]:
         return False, "响应解析失败"
 
 
-def send_message(db, chat_id: int, text: str, reply_markup: dict | None = None) -> tuple[bool, str | None]:
+def send_message(
+    db,
+    chat_id: int,
+    text: str,
+    reply_markup: dict | None = None,
+    parse_mode: str | None = "HTML",
+) -> tuple[bool, str | None]:
     """
     向指定 Telegram 聊天发送消息
 
     :param db: 数据库会话对象
     :param chat_id: 目标聊天 ID
-    :param text: 消息文本内容
+    :param text: 消息文本内容（HTML 转义后的文本；parse_mode 默认为 HTML）
     :param reply_markup: 可选的键盘标记（Telegram API 格式）
+    :param parse_mode: Telegram 解析模式，默认 "HTML"；传 None 则不带该字段
     :return: (是否成功, 错误信息)，成功时为 (True, None)
     """
     # 构造请求负载
@@ -67,6 +74,8 @@ def send_message(db, chat_id: int, text: str, reply_markup: dict | None = None) 
         "chat_id": chat_id,
         "text": text,
     }
+    if parse_mode is not None:
+        payload["parse_mode"] = parse_mode
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
 
@@ -78,17 +87,25 @@ def delete_message(db, chat_id: int, message_id: int) -> tuple[bool, str | None]
     return _call(db, "deleteMessage", {"chat_id": chat_id, "message_id": message_id})
 
 
-def edit_message_text(db, chat_id: int, message_id: int, text: str, reply_markup: dict | None = None) -> tuple[bool, str | None]:
+def edit_message_text(
+    db,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    reply_markup: dict | None = None,
+    parse_mode: str | None = "HTML",
+) -> tuple[bool, str | None]:
     """
     原地编辑指定消息的文本与键盘（不重发新消息）
 
-    用途：抢红包后原地更新按钮消息
+    用途：抢红包后原地更新按钮消息、菜单按钮切换页面
 
     :param db: 数据库会话对象
     :param chat_id: 目标聊天 ID
     :param message_id: 要编辑的消息 ID
-    :param text: 新的消息文本内容
+    :param text: 新的消息文本内容（HTML 转义后的文本）
     :param reply_markup: 可选的键盘标记（Telegram API 格式）
+    :param parse_mode: Telegram 解析模式，默认 "HTML"；传 None 则不带该字段
     :return: (是否成功, 错误信息)，成功时为 (True, None)
     """
     # 构造请求负载
@@ -97,6 +114,8 @@ def edit_message_text(db, chat_id: int, message_id: int, text: str, reply_markup
         "message_id": message_id,
         "text": text,
     }
+    if parse_mode is not None:
+        payload["parse_mode"] = parse_mode
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
 
@@ -125,3 +144,23 @@ def answer_callback_query(db, callback_query_id: str, text: str | None = None, s
         payload["show_alert"] = True
 
     return _call(db, "answerCallbackQuery", payload)
+
+
+def set_my_commands(db, commands: list[tuple[str, str]]) -> tuple[bool, str | None]:
+    """
+    注册 Bot 命令菜单（客户端输入框旁的「菜单」按钮里显示）。
+
+    幂等：相同命令重复注册无副作用；失败只返回错误不抛异常，
+    由调用方决定是否重试。
+
+    :param db: 数据库会话对象
+    :param commands: [(command, description)]，command 不带斜杠、小写字母数字下划线
+    :return: (是否成功, 错误信息)，成功时为 (True, None)
+    """
+    payload = {
+        "commands": [
+            {"command": command, "description": description}
+            for command, description in commands
+        ]
+    }
+    return _call(db, "setMyCommands", payload)

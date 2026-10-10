@@ -138,6 +138,31 @@ def poll_forever() -> None:
         t.start()
 
     backoff = 5
+
+    # 启动时注册一次 Bot 命令菜单（客户端「菜单」按钮可见）；幂等，失败不影响轮询
+    try:
+        from backend.tg_bot import sender as _sender
+
+        _db = SessionLocal()
+        try:
+            ok, err = _sender.set_my_commands(_db, [
+                ("start", "欢迎与快捷入口"),
+                ("help", "帮助"),
+                ("bind", "绑定 Telegram"),
+                ("checkin", "每日签到"),
+                ("points", "查积分"),
+                ("redpacket", "发红包"),
+                ("lottery", "抽奖"),
+                ("redeem", "兑换码兑换"),
+                ("chatpoints", "群发言积分查询"),
+            ])
+            if not ok:
+                logger.debug("tg setMyCommands failed: %s", err)
+        finally:
+            _db.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("tg setMyCommands skipped: %s", exc)
+
     while True:
         db = SessionLocal()
         try:

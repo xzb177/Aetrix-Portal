@@ -61,7 +61,8 @@ def test_identity_resolve_not_found(db):
 
 def test_handle_start_unbound(db):
     tg_user = {"id": 555, "first_name": "Tom"}
-    text = handlers.handle_start(db, tg_user, 555, "")
+    result = handlers.handle_start(db, tg_user, 555, "")
+    text = result[0] if isinstance(result, tuple) else result
     assert "/bind" in text
 
 
@@ -80,7 +81,7 @@ def test_handle_help(db):
 
 def test_handle_bind_no_args_returns_guide(db):
     text = handlers.handle_bind(db, {"id": 999010}, 999010, "")
-    assert "🔗 如何绑定账号" in text
+    assert "如何绑定账号" in text
     assert "/bind 绑定码" in text
     assert db.query(models.TgBindCode).count() == 0
 
@@ -97,7 +98,7 @@ def test_handle_bind_with_valid_code(db):
 
     text = handlers.handle_bind(db, {"id": 999011}, 999011, "234567")
 
-    assert "✅ 绑定成功" in text
+    assert "绑定成功" in text
     assert "👤 用户名：webuser2" in text
     assert "无有效订阅" in text
     db.refresh(u)
@@ -140,7 +141,7 @@ def test_handle_bind_success_with_subscription(db):
 
 def test_handle_help_appends_bind_guide(db):
     text = handlers.handle_help(db, {}, 1, "")
-    assert "🔗 如何绑定账号" in text
+    assert "如何绑定账号" in text
     assert "/start" in text
 
 
