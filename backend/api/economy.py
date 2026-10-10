@@ -185,23 +185,6 @@ class InsufficientPoints(ValueError):
     """余额不足（_spend_points 的条件扣减没扣到）"""
 
 
-def lock_user_row(db: Session, user_id: int) -> None:
-    """对用户行加写锁，持有到本事务提交/回滚（每日/滚动额度类「读用量-判上限-写」的串行化原语）。
-
-    额度检查（今日已转出、今日群发言已得、7 天红包收发次数）都是先 SUM/COUNT 再判断：
-    并发两个请求都读到同一旧用量、都判定未超限 → 上限被绕过。统一做法：检查前先锁住
-    该用户行，再在锁内统计用量；第二个请求在锁上等前者提交后，重新统计就能看到前者的记录。
-    - PostgreSQL：SELECT ... FOR UPDATE（READ COMMITTED 下锁后的新语句看得到已提交数据）；
-    - SQLite：无行锁，用无副作用 UPDATE 取得库级写锁（同样持有到提交）。
-    不需要新表/迁移。必须在统计用量之前调用。
-    """
-    from sqlalchemy import text as _text
-    if db.get_bind().dialect.name == "postgresql":
-        db.execute(_text("SELECT id FROM web_users WHERE id = :id FOR UPDATE"), {"id": user_id})
-    else:
-        db.execute(_text("UPDATE web_users SET id = id WHERE id = :id"), {"id": user_id})
-
-
 def _spend_points(
     db: Session, user: models.WebUser, cost: int,
     type_: str, description: str, ref_id: str | None = None,
@@ -431,9 +414,7 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
         if rules["penalty_pct"] > 0 and random.random() * 100 < rules["penalty_pct"]:
             penalty_amount = random.randint(rules["penalty_min"], rules["penalty_max"])
             penalty = True
-        # 惩罚只削减当日奖励，不倒扣余额：base+bonus-penalty 可能为负（如 base=1、penalty=3），
-        # 负数会经 _add_points 直接扣用户积分（可扣成负余额），且前端/通知文案都不支持负奖励
-        reward = max(0, base + bonus - penalty_amount)
+        reward = base + bonus - penalty_amount
 
     record = models.CheckinRecord(
         user_id=user_id,
@@ -459,12 +440,16 @@ def _do_checkin_core(db: Session, user: models.WebUser) -> dict:
         db, user, reward, "checkin",
         description, f"checkin:{today.strftime('%Y%m%d')}",
     )
-    # C1 活力值：公益服用户签到恢复 1 点活力（上限钳制）
+    # C1 活力值：公益服用户签到恢复活力（受每日免费获取上限钳制）
     vitality_gained = 0
     if is_welfare:
         try:
-            if _vitality.get_vitality_config(db)["enabled"]:
-                vitality_gained = _vitality._add_vitality(db, user_id, 1, "checkin")
+            cfg = _vitality.get_vitality_config(db)
+            if cfg["enabled"]:
+                limit = int(cfg.get("daily_gain_limit", 0) or 0)
+                gained = _vitality.get_today_free_gain(db, user_id) if limit > 0 else 0
+                if limit <= 0 or gained < limit:
+                    vitality_gained = _vitality._add_vitality(db, user_id, 1, "checkin")
         except Exception:
             logger.exception("checkin vitality restore failed for user %s", user_id)
     db.commit()
@@ -555,30 +540,18 @@ async def recharge_vitality(
     room = st["max"] - st["vitality"]
     if room <= 0:
         raise HTTPException(status_code=400, detail="活力值已满，无需续")
-    requested = want  # 外层空间检查只用于快速失败；真正的空间在事务内锁行后重算
+    want = min(want, room)
+    spend = want * cost
 
     def _do() -> dict:
-        # 锁用户行后重读活力值算剩余空间：外层读的是旧值，并发两笔续费都按同一空间扣分，
-        # 活力被 _add_vitality 截断在上限 → 多扣的积分白花（超付）。
-        lock_user_row(db, current_user.id)
-        current_v = int(
-            db.query(models.WebUser.vitality).filter(models.WebUser.id == current_user.id).scalar() or 0
-        )
-        room_now = st["max"] - current_v
-        if room_now <= 0:
-            db.rollback()
-            raise HTTPException(status_code=400, detail="活力值已满，无需续")
-        gain = min(requested, room_now)
-        spend = gain * cost
-        try:
-            balance = _spend_points(db, current_user, spend, "vitality_recharge",
-                                    f"积分续活力 +{gain}", f"vitality:{gain}")
-        except InsufficientPoints:
+        balance = _add_points(db, current_user, -spend, "vitality_recharge",
+                              f"积分续活力 +{want}", f"vitality:{want}")
+        if balance < 0:
             db.rollback()
             raise HTTPException(status_code=400, detail="积分不足")
-        new_v = _vitality._add_vitality(db, current_user.id, gain, "recharge")
+        new_v = _vitality._add_vitality(db, current_user.id, want, "recharge")
         db.commit()
-        return {"vitality_gained": gain, "points_spent": spend,
+        return {"vitality_gained": want, "points_spent": spend,
                 "vitality": new_v, "points_balance": balance}
 
     return {"success": True, **await run_in_threadpool(_do)}
@@ -1670,8 +1643,6 @@ def transfer_points_core(db: Session, sender: models.WebUser, recipient_username
         raise ValueError("对方用户不存在")
 
     if daily_cap > 0:
-        # 先锁转出方用户行再统计今日已转出，避免并发多笔都读到旧用量绕过上限
-        lock_user_row(db, sender.id)
         today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         used_today = (
             db.query(func.coalesce(func.sum(-models.PointsLog.amount), 0))
