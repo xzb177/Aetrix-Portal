@@ -90,7 +90,6 @@ const welfareFields = [
   { key: 'welfare_grace_days', label: '到期保留天数', hint: '到期后可登录但不可播放，默认 7', suffix: '天' },
   { key: 'welfare_inactive_days', label: '未活跃禁用天数', hint: '默认 30', suffix: '天' },
   { key: 'welfare_request_monthly', label: '公益求片额度', hint: '默认 3', suffix: '次/月' },
-  { key: 'lottery_cost', label: '抽奖消耗积分', hint: '默认 10', suffix: '积分/次' },
 ]
 
 const chatPointsFields = [
