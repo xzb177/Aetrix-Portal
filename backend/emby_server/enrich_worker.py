@@ -783,7 +783,8 @@ def _apply_cast(db, item: Any, details: Optional[dict]) -> None:
     """写库阶段：把 details 里的演员表写入 ``emby_people``（幂等）。
 
     details 自带 credits（``append_to_response``，一次请求，不新增 TMDB 调用）。
-    **只在该条目还没有演员行时写**：补全重跑/修复重跑不会产生重复行；头像已在
+    **只在该条目还没有演员行时写**（已有行只按名字补空头像/空 TMDB id）：补全重跑/
+    修复重跑不会产生重复行；头像已在
     IO 阶段预热（``_enrich_fetch``），写事务里不碰网络。失败只记日志，
     不影响主流程（演员表是增强信息，不是核心元数据）。
     """
@@ -794,19 +795,38 @@ def _apply_cast(db, item: Any, details: Optional[dict]) -> None:
         cast = _cast_list(details)
         if not cast:
             return
-        exists = db.query(em.EmbyPerson.id).filter(
-            em.EmbyPerson.item_id == item.id).first()
-        if exists:
-            return
-        for c in cast:
-            db.add(em.EmbyPerson(
-                item_id=item.id,
-                name=str(c["name"])[:200],
-                role=str(c.get("role") or "")[:200],
-                image=str(c.get("image") or "")[:1024],
-                sort_order=int(c.get("sort_order") or 0),
-                person_tmdb_id=str(c.get("person_id") or "")[:32],
-            ))
+        existing = db.query(em.EmbyPerson).filter(
+            em.EmbyPerson.item_id == item.id).all()
+        missing_image = False
+        if existing:
+            # 已有演员行不重写（防重复），但把空着的头像 / TMDB id 按名字补上：
+            # 以前演员表写一次就再也不更新，首刮时 TMDB 还没头像的演员永远是占位。
+            by_name = {c["name"]: c for c in cast}
+            for p in existing:
+                c = by_name.get(p.name)
+                if c and c.get("image") and not p.image:
+                    p.image = str(c["image"])[:1024]
+                if c and c.get("person_id") and not p.person_tmdb_id:
+                    p.person_tmdb_id = str(c["person_id"])[:32]
+                missing_image = missing_image or not p.image
+        else:
+            for c in cast:
+                db.add(em.EmbyPerson(
+                    item_id=item.id,
+                    name=str(c["name"])[:200],
+                    role=str(c.get("role") or "")[:200],
+                    image=str(c.get("image") or "")[:1024],
+                    sort_order=int(c.get("sort_order") or 0),
+                    person_tmdb_id=str(c.get("person_id") or "")[:32],
+                ))
+                missing_image = missing_image or not c.get("image")
+        if missing_image:
+            # 有演员没头像：唤醒演员补全线程（TMDB 人物 / 豆瓣兜底），不在写事务里发请求
+            try:
+                from backend.emby_server import refresh_person_worker as _rpw
+                _rpw.kick()
+            except Exception:  # noqa: BLE001
+                pass
     except Exception as exc:  # noqa: BLE001 — 演员落库失败不该影响主流程
         logger.debug("演员落库失败 %s: %s", getattr(item, "name", ""), exc)
 
@@ -890,6 +910,12 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
 
     # 3.5 演员表（v2.51.0）：details 自带 credits；幂等，只在没有演员行时写。
     _apply_cast(db, item, fetched.get("tmdb_details"))
+    # 元数据片长（只补空）：apply_details 被「已有 imdb+别名」短路时也要落
+    try:
+        from backend.emby_server.tmdb import apply_runtime as _apply_rt
+        _apply_rt(item, fetched.get("tmdb_details"))
+    except Exception:  # noqa: BLE001
+        pass
 
     # 单集 TMDB 数据（v2.50.0）：标题/简介/剧照
     # 在父级图片回退之前应用——有专属剧照的集用自己的，没有的才回退
@@ -971,6 +997,9 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
                     pass
             if _dbn_details.get("overview") and not (item.overview or "").strip():
                 item.overview = _dbn_details["overview"][:2000]
+            if _dbn_details.get("runtime_ticks") and not (
+                    getattr(item, "metadata_runtime_ticks", 0) or 0):
+                item.metadata_runtime_ticks = int(_dbn_details["runtime_ticks"])
             if _dbn_details.get("rating"):
                 try:
                     item.community_rating = float(_dbn_details["rating"])
