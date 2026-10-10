@@ -1,24 +1,25 @@
 """开箱即用的播放优化通用能力。
 
 用户部署 Aetrix、挂载存储后，不用手动调任何参数，播放就好好工作。
-本模块收敛三块能力，全项目只此一处实现（横切能力只许一套）：
+本模块收敛四块能力，全项目只此一处实现（横切能力只许一套）：
 
 1. rclone 挂载参数自动优化（``DEFAULT_RCLONE_VFS_ARGS``）
-2. SA 自动轮换（``ensure_sa_rotation``）
+1b. rclone 缓存配置与磁盘压力保护（``build_rclone_cache_args`` /
+    ``check_disk_pressure``）
+2. SA 应用层轮换（``ensure_sa_rotation``）
 3. 单文件并发 Range 限流（``RangeConcurrencyLimiter``）
 """
 
 from __future__ import annotations
 
 import configparser
+import json
 import logging
-import re
 import shutil
-import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +47,81 @@ DEFAULT_RCLONE_MOUNT_FLAGS: list[str] = [
     "--allow-other",
 ]
 
+# ---------------------------------------------------------------------------
+# 1b. rclone 缓存配置（磁盘压力保护）
+# ---------------------------------------------------------------------------
+# VFS 缓存是播放流畅的关键，但无上限的缓存会吃光磁盘。这里全部可配置：
+# - max_size：缓存上限（None = 按磁盘自动算，见 auto_vfs_cache_size）
+# - max_age：缓存文件最长保留（LRU 淘汰冷数据）
+# - min_free_space：磁盘剩余小于此值时 rclone 自动清理缓存（磁盘保护线）
+# - dir_cache_time：目录结构缓存时间（减少 Drive API 调用）
+# - cache_dir：缓存落盘目录
+DEFAULT_VFS_CACHE_MAX_AGE = "72h"
+DEFAULT_VFS_CACHE_MIN_FREE_SPACE = "10G"
+DEFAULT_DIR_CACHE_TIME = "5m"
+DEFAULT_CACHE_DIR = "/var/cache/rclone"
 
-def build_rclone_mount_args(extra: Optional[Iterable[str]] = None) -> list[str]:
+
+def build_rclone_cache_args(
+    cache_dir: str = DEFAULT_CACHE_DIR,
+    max_size: str | None = None,
+    max_age: str = DEFAULT_VFS_CACHE_MAX_AGE,
+    min_free_space: str = DEFAULT_VFS_CACHE_MIN_FREE_SPACE,
+    dir_cache_time: str = DEFAULT_DIR_CACHE_TIME,
+) -> list[str]:
+    """拼出 rclone 缓存相关参数。
+
+    ``max_size=None`` 时按 ``cache_dir`` 所在磁盘自动计算（见
+    ``auto_vfs_cache_size``）；显式传入则直接使用（如 ``"5G"``）。
+    返回去重前的参数列表（调用方用 build_rclone_mount_args 合并去重）。
+    """
+    size = max_size if max_size else auto_vfs_cache_size(cache_dir)
+    return [
+        "--cache-dir", cache_dir,
+        "--vfs-cache-max-size", size,
+        "--vfs-cache-max-age", max_age,
+        "--vfs-cache-min-free-space", min_free_space,
+        "--dir-cache-time", dir_cache_time,
+    ]
+
+
+def check_disk_pressure(cache_dir: str = DEFAULT_CACHE_DIR,
+                        min_free_gb: float = 10.0) -> dict:
+    """检查缓存目录所在磁盘压力。
+
+    返回 ``{"ok": bool, "free_gb": float, "total_gb": float,
+    "use_pct": float, "warning": str|None}``。
+    ``ok=False`` 表示剩余空间低于 ``min_free_gb``，建议清理或调小缓存。
+    检测失败时 ``ok=True``（不阻断主流程，只告警）。
+    """
+    result: dict = {"ok": True, "free_gb": 0.0, "total_gb": 0.0,
+                    "use_pct": 0.0, "warning": None}
+    try:
+        total, used, free = shutil.disk_usage(cache_dir)
+        total_gb = total / (1024 ** 3)
+        free_gb = free / (1024 ** 3)
+        result["total_gb"] = round(total_gb, 1)
+        result["free_gb"] = round(free_gb, 1)
+        result["use_pct"] = round(used / total * 100, 1) if total else 0.0
+        if free_gb < min_free_gb:
+            result["ok"] = False
+            result["warning"] = (
+                f"磁盘压力高：{cache_dir} 仅剩 {free_gb:.1f}GB（阈值 {min_free_gb}GB），"
+                "rclone 会按 --vfs-cache-min-free-space 自动清理缓存；"
+                "如持续告警请调小 --vfs-cache-max-size 或扩容磁盘"
+            )
+    except Exception as e:  # noqa: BLE001
+        result["warning"] = f"磁盘检测失败：{e}"
+    return result
+
+
+def build_rclone_mount_args(extra: Optional[Iterable[str]] = None,
+                            cache_args: Optional[Iterable[str]] = None) -> list[str]:
     """合并默认优化参数与用户自定义参数，用户显式给的胜出。
 
     ``extra`` 形如 ``["--vfs-read-chunk-size", "64M", "--daemon"]``。
+    ``cache_args`` 为缓存相关参数（见 ``build_rclone_cache_args``），
+    不传则不含缓存配置（保持向后兼容）。
     返回去重后的完整参数列表（不含 ``rclone mount`` 本体与 remote/挂载点）。
     """
     merged: dict[str, str | None] = {}
@@ -73,6 +144,8 @@ def build_rclone_mount_args(extra: Optional[Iterable[str]] = None) -> list[str]:
 
     _feed(DEFAULT_RCLONE_VFS_ARGS)
     _feed(DEFAULT_RCLONE_MOUNT_FLAGS)
+    if cache_args:
+        _feed(cache_args)
     if extra:
         _feed(extra)
 
@@ -87,36 +160,60 @@ def build_rclone_mount_args(extra: Optional[Iterable[str]] = None) -> list[str]:
 def build_rclone_mount_cmd(remote: str, mountpoint: str,
                            extra: Optional[Iterable[str]] = None,
                            bin_path: str = "rclone",
-                           config: str = "") -> list[str]:
+                           config: str = "",
+                           cache_args: Optional[Iterable[str]] = None) -> list[str]:
     """拼出开箱即用的 ``rclone mount`` 完整命令（含优化参数）。"""
     cmd = [bin_path, "mount", remote, mountpoint]
     if config:
         cmd += ["--config", config]
-    cmd += build_rclone_mount_args(extra)
+    cmd += build_rclone_mount_args(extra, cache_args)
     return cmd
 
 
 # ---------------------------------------------------------------------------
-# 2. SA 自动轮换
+# 2. SA 自动轮换（应用层）
 # ---------------------------------------------------------------------------
 # Google Drive 单 SA 有下载配额，热门文件会被 403（downloadQuotaExceeded）。
-# rclone >= 1.55 支持 service_account_file_path（目录），自动轮换目录下所有 SA，
-# 配额 × N。老版本只能单 SA，本函数降级并给出告警。
-SA_ROTATION_MIN_VERSION = (1, 55, 0)
+#
+# 历史：rclone 1.55+ 曾支持 service_account_file_path（目录）由 rclone 内核
+# 自动轮换，但该选项在后续版本中被移除（v1.68/v1.75 实测已无此选项，
+# 配置会被静默忽略，导致 "empty token found"）。
+#
+# 现方案（应用层轮换）：本函数每次调用时按轮询（round-robin）从 SA 目录
+# 挑选下一个 SA，写入 ``service_account_file``（单文件模式，rclone 一直支持）。
+# 轮换位置持久化在配置文件同目录的 ``.sa_rotation.json``，重启/重部署后
+# 继续轮换。调用时机：部署时、挂载前（不需要在播放中热切换）。
+#
+# 配额效果：N 个 SA 轮流承担挂载，长期看配额 ≈ × N。
+SA_ROTATION_STATE_FILENAME = ".sa_rotation.json"
 
 
-def rclone_version_tuple(bin_path: str = "rclone") -> Optional[tuple[int, int, int]]:
-    """解析 ``rclone version``，返回 (major, minor, patch)，失败返回 None。"""
-    exe = shutil.which(bin_path) or bin_path
+def _sa_state_path(conf_path: str | Path) -> Path:
+    """轮换状态文件路径（与 rclone 配置同目录）。"""
+    return Path(conf_path).parent / SA_ROTATION_STATE_FILENAME
+
+
+def _next_sa_index(sa_files: list[Path], state_path: Path) -> int:
+    """按轮询返回下一个 SA 的索引，并持久化。
+
+    状态文件损坏/缺失时从 0 开始。索引对文件数取模，SA 增删后自动适应。
+    """
+    idx = 0
     try:
-        out = subprocess.run([exe, "version"], capture_output=True, text=True,
-                             timeout=15).stdout or ""
-    except Exception:  # noqa: BLE001
-        return None
-    m = re.search(r"rclone v(\d+)\.(\d+)\.(\d+)", out)
-    if not m:
-        return None
-    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        if state_path.is_file():
+            data = json.loads(state_path.read_text(encoding="utf-8"))
+            idx = int(data.get("index", 0))
+    except Exception:  # noqa: BLE001 — 状态损坏就从头开始，不影响主流程
+        idx = 0
+    idx = idx % max(1, len(sa_files))
+    try:
+        state_path.write_text(
+            json.dumps({"index": idx + 1, "file": sa_files[idx].name}),
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001 — 写失败只打日志，不阻断
+        logger.warning("SA 轮换状态写入失败：%s", state_path)
+    return idx
 
 
 def _sa_json_files(sa_dir: str | Path) -> list[Path]:
@@ -128,19 +225,26 @@ def _sa_json_files(sa_dir: str | Path) -> list[Path]:
 
 def ensure_sa_rotation(conf_path: str | Path,
                        sa_dir: str | Path,
-                       bin_path: str = "rclone") -> dict:
-    """让 rclone 配置自动用上 SA 轮换（幂等，可重复调）。
+                       state_path: str | Path | None = None) -> dict:
+    """让 rclone 配置用上 SA 轮换（幂等思想：每次调用推进一次轮换）。
 
-    - rclone >= 1.55 且 SA 目录里有 >=2 个 json：写
-      ``service_account_file_path = <sa_dir>``（删掉旧的单文件配置）。
-    - 只有 1 个 json：用 ``service_account_file`` 指向它。
-    - 版本太老：不动配置，返回 warning 提示升级。
+    - SA 目录里有 >=1 个 json：按轮询挑选下一个，写
+      ``service_account_file = <选中文件>``（单文件模式，各版本 rclone 通用）。
     - SA 目录为空/不存在：不动，返回 warning。
+    - 配置文件不存在：不动，返回 warning。
 
-    返回 ``{"changed": bool, "mode": "dir"|"single"|"none", "warning": str|None}``。
+    ``state_path`` 可指定轮换状态文件位置（默认与配置同目录的
+    ``.sa_rotation.json``），测试时可传入临时路径。
+
+    返回 ``{"changed": bool, "mode": "rotated"|"single"|"none",
+    "warning": str|None, "sa_file": str|None}``。
     只改 [remote] 里原来就配了 service_account_* 的节，不碰 OAuth 的节。
+
+    注意：rclone 已移除内核目录轮换（service_account_file_path），本函数
+    改为应用层轮换；调用后需要重启挂载生效（SA 在挂载时加载）。
     """
-    result: dict = {"changed": False, "mode": "none", "warning": None}
+    result: dict = {"changed": False, "mode": "none", "warning": None,
+                    "sa_file": None}
     conf = Path(conf_path)
     if not conf.is_file():
         result["warning"] = f"rclone 配置不存在：{conf}"
@@ -151,10 +255,11 @@ def ensure_sa_rotation(conf_path: str | Path,
         result["warning"] = f"SA 目录为空或不存在：{sa_dir}，未启用轮换"
         return result
 
-    ver = rclone_version_tuple(bin_path)
-    if ver is None:
-        result["warning"] = "检测不到 rclone 版本，未改动 SA 配置"
-        return result
+    st_path = Path(state_path) if state_path else _sa_state_path(conf)
+    idx = _next_sa_index(sa_files, st_path)
+    want = str(sa_files[idx].resolve())
+    result["sa_file"] = want
+    result["mode"] = "rotated" if len(sa_files) >= 2 else "single"
 
     parser = configparser.ConfigParser()
     parser.read(conf, encoding="utf-8")
@@ -165,31 +270,17 @@ def ensure_sa_rotation(conf_path: str | Path,
         has_dir = parser.has_option(section, "service_account_file_path")
         if not (has_single or has_dir):
             continue
-        if len(sa_files) >= 2 and ver >= SA_ROTATION_MIN_VERSION:
-            # 目录轮换
-            want = str(Path(sa_dir).resolve()) + "/"
-            if has_single:
-                parser.remove_option(section, "service_account_file")
-                changed = True
-            if (not has_dir) or parser.get(section, "service_account_file_path") != want:
-                parser.set(section, "service_account_file_path", want)
-                changed = True
-            result["mode"] = "dir"
-        else:
-            # 单 SA（版本太老或只有一个 json）
-            want = str(sa_files[0].resolve())
-            if has_dir:
-                parser.remove_option(section, "service_account_file_path")
-                changed = True
-            if (not has_single) or parser.get(section, "service_account_file") != want:
-                parser.set(section, "service_account_file", want)
-                changed = True
-            result["mode"] = "single"
-            if ver < SA_ROTATION_MIN_VERSION:
-                result["warning"] = (
-                    f"rclone {'.'.join(map(str, ver))} < 1.55，不支持 SA 目录轮换，"
-                    "已用单 SA；建议升级 rclone 后重跑以启用轮换"
-                )
+        # 清理已废弃的目录模式配置（rclone 新版会静默忽略，导致 empty token）
+        if has_dir:
+            parser.remove_option(section, "service_account_file_path")
+            changed = True
+            result["warning"] = (
+                "已清理废弃的 service_account_file_path（rclone 已移除内核目录轮换），"
+                "改用应用层轮换"
+            )
+        if (not has_single) or parser.get(section, "service_account_file") != want:
+            parser.set(section, "service_account_file", want)
+            changed = True
 
     if changed:
         with open(conf, "w", encoding="utf-8") as fh:
@@ -282,8 +373,7 @@ def auto_vfs_cache_size(cache_dir: str) -> str:
     检测失败（权限/路径不存在）时回退默认小盘值，绝不抛异常。
     """
     try:
-        import shutil as _shutil
-        total, _used, free = _shutil.disk_usage(cache_dir)
+        total, _used, free = shutil.disk_usage(cache_dir)
         total_gb = total // (1024 ** 3)
         if total_gb >= BIG_DISK_THRESHOLD_GB:
             size_gb = max(20, int((free // (1024 ** 3)) * CACHE_DISK_RATIO))
