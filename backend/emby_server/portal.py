@@ -17,6 +17,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 from typing import Optional
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -300,6 +301,28 @@ def _realm_view_granted(db: Session, user: models.WebUser, realm_id: int | None
     return subscriptions.view_grant(db, user, realm_id)
 
 
+# 用心播放器（= Rex 播放器）一键导入的基础 URL（不含查询参数）。
+# 参数格式由用户 2026-10-04 分享（见 workspace/docs/rex-deep-link-cheatsheet.md）：
+# rex://import?type=emby&scheme=&host=&port=&username=&password=
+YONGXIN_IMPORT_URL = "rex://import"
+
+
+def _rex_import_link(url: str, username: str) -> str:
+    """拼 Rex（用心播放器）一键导入 deep link。
+
+    host/port 从服务器地址解析；地址里没写端口时按协议补 80/443。
+    密码不拼进链接（服务端不存明文密码，用户在 Rex 里输一次即可）。
+    """
+    scheme = os.getenv("EMBY_URL_SCHEME", "") or urlsplit(url).scheme or "http"
+    parsed = urlsplit(url if "://" in url else f"{scheme}://{url}")
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return (
+        f"{YONGXIN_IMPORT_URL}?type=emby&scheme={scheme}"
+        f"&host={host}&port={port}&username={quote(username or '', safe='')}"
+    )
+
+
 def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None,
                   request: Request | None = None) -> dict:
     """构造账号卡（不含密码明文；导入 scheme 需用户已在播放器中保存密码）
@@ -321,7 +344,6 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
     url = resolve_emby_base_url(db, realm_id, request)
     mode = emby_active_mode(db, realm_id)
     external = mode == "external"
-    host = url.split("//")[-1]
     realm = realms.get_realm(db, realm_id)
     granted, unlock = _realm_view_granted(db, user, realm_id)
     price_points, price_days = _view_unlock_pricing(db)
@@ -345,7 +367,8 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
         "access_note": realms.access_note_of(db, realm_id),
         "allow_download": subscriptions.download_allowed(db, realm_id),
         "import_schemes": {} if (external or not granted) else {
-            "forward": f"forward://import?type=emby&scheme={os.getenv('EMBY_URL_SCHEME', 'http')}&host={host}&username={user.emby_username}",
+            # 用心播放器（= Rex 播放器）一键导入（2026-10-10 用户要求替换 forward）。
+            "用心播放器": _rex_import_link(url, user.emby_username),
             "senplayer": f"senplayer://importserver?type=emby&name=Aetrix&address={url}&username={user.emby_username}",
         },
         "view_permission": {
