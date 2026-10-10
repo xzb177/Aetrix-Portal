@@ -53,10 +53,11 @@ def test_lottery_seed_visible_after_draw():
         db.close()
 
 
-def test_verify_signed_headers_accepts_valid():
+def test_verify_signed_headers_accepts_valid(monkeypatch):
     """合法 HMAC 签名头通过。"""
     import secrets as pysecrets
     from backend import node_auth
+    monkeypatch.setenv("NODE_SHARED_SECRET", "ci-test-shared-secret")
     key = node_auth.node_shared_secret()
     assert key, "测试需要 SECRET_KEY"
     ts = str(int(time.time()))
@@ -67,18 +68,20 @@ def test_verify_signed_headers_accepts_valid():
         headers, "GET", "/api/admin/stream-nodes/bundle") is True
 
 
-def test_verify_signed_headers_rejects_static_key():
+def test_verify_signed_headers_rejects_static_key(monkeypatch):
     """静态 X-Panel-Key 必须被拒绝（bundle 不再接受）。"""
     from backend import node_auth
+    monkeypatch.setenv("NODE_SHARED_SECRET", "ci-test-shared-secret")
     key = node_auth.node_shared_secret()
     assert node_auth.verify_signed_headers(
         {"X-Panel-Key": key}, "GET", "/api/admin/stream-nodes/bundle") is False
 
 
-def test_verify_signed_headers_rejects_stale_ts():
+def test_verify_signed_headers_rejects_stale_ts(monkeypatch):
     """过期时间戳被拒绝。"""
     import secrets as pysecrets
     from backend import node_auth
+    monkeypatch.setenv("NODE_SHARED_SECRET", "ci-test-shared-secret")
     key = node_auth.node_shared_secret()
     ts = str(int(time.time()) - 3600)  # 1 小时前
     nonce = pysecrets.token_hex(16)
