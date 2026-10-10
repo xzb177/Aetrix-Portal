@@ -701,6 +701,20 @@ def _enrich_fetch_pre(item: Any, holder: Optional[dict] = None,
         except Exception as exc:
             logger.debug("豆瓣优先搜索失败 %s: %s", item.name, exc)
 
+    # 单集 TMDB 数据（v2.55.0）：有自带 NFO 的单集不走纯继承，但父级有 tmdb_id 时
+    # 仍应拉取本集标题/简介/剧照——之前只在纯继承分支调 _fetch_episode_tmdb，
+    # 有 NFO 的单集永远拿不到单集级数据。在这里补调（幂等，失败静默）。
+    if (kind == "episode" and inherit_parent
+            and not result.get("pure_inherit")
+            and not result.get("episode_tmdb")):
+        from backend.emby_server.tmdb import TmdbTransientError as _TTE
+        try:
+            _fetch_episode_tmdb(item, inherit_parent, result)
+        except _TTE:
+            # 瞬态失败（网络/限流）上抛：整条进重试队列，与纯继承分支同口径
+            raise
+        except Exception:  # noqa: BLE001 — 非瞬态失败静默，不影响主流程
+            pass
     # NFO tmdb_id 无条件落 result（原 TMDB 段首行逻辑，前移以便批量规划）
     if nfo_data and nfo_data.get("tmdb_id"):
         result["tmdb_id"] = str(nfo_data["tmdb_id"])
@@ -1054,8 +1068,16 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
         item.tmdb_id = item.tmdb_id or fetched["tmdb_id"]
         details = fetched.get("tmdb_details")
         if details:
-            if not (nfo_data or {}).get("imdb_id") and (
-                    needs_repair or not (item.imdb_id and item.aliases)):
+            # 简介/评分/类型门控（v2.55.0）：apply_details 是"只补缺项"，但原门控
+            # "已有 imdb_id+aliases 就跳过"把简介/评分/类型也挡住了——生产实证
+            # 126 个有 tmdb_id 的剧集因此缺简介。简介/类型缺失也要跑 apply_details。
+            _needs_details = (
+                needs_repair
+                or not (item.imdb_id and item.aliases)
+                or not (item.overview or "").strip()
+                or not (item.genres or "").strip()
+            )
+            if not (nfo_data or {}).get("imdb_id") and _needs_details:
                 tmdb_client.apply_details(item, details)
             if needs_repair or not (item.poster_path or item.primary_image_url):
                 tmdb_client.apply_images(item, details,
@@ -1065,7 +1087,12 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     elif fetched.get("tmdb_hit"):
         tmdb_client.apply(item, fetched["tmdb_hit"], kind)
         details = fetched.get("tmdb_details")
-        if details and not (item.imdb_id and item.aliases):
+        _needs_details_b = (
+            not (item.imdb_id and item.aliases)
+            or not (item.overview or "").strip()
+            or not (item.genres or "").strip()
+        )
+        if details and _needs_details_b:
             tmdb_client.apply_details(item, details)
         if nfo_data:
             nfo_lib.apply_nfo(item, nfo_data, kind)
@@ -1275,6 +1302,29 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
             )) >= 2
             if not has_core:
                 _incomplete = True
+    # 单集等待父级（v2.55.0）：episode 从不走 TMDB 搜索，只靠父级继承。
+    # 父级还没 done（pending/enriching，如父级在退避期没被一起抢单）时，
+    # 此时标 'none' 是误杀——父级 done 后本集本可继承。退回 pending 等 5 分钟，
+    # 不计失败次数。父级终态失败（done 但无 tmdb_id/图）时才走下面的 'none'。
+    # 生产实证：41,811 个标 'none' 的单集父级有 tmdb_id，本可继承却被标死。
+    if (item_type == "episode" and not fetched.get("pure_inherit")
+            and not item.metadata_source):
+        _parent_status = ""
+        if item.series_id:
+            try:
+                _p = db.query(em.MediaItem).filter(
+                    em.MediaItem.id == item.series_id).first()
+                _parent_status = (_p.enrich_status or "") if _p is not None else ""
+            except Exception:  # noqa: BLE001 — 父级查询失败不影响主流程
+                _parent_status = ""
+        if _parent_status in ("pending", "enriching"):
+            item.enrich_status = "pending"
+            item.enrich_next_retry_at = datetime.now() + timedelta(seconds=300)
+            item.enrich_claimed_at = None
+            item.enrich_claim_token = None
+            item.enrich_priority = 0
+            _maybe_queue_probe(db, item)
+            return
     # 「跑过但没拿到数据」显式记为 none，和「从未标记过」(NULL) 区分开。
     # 这样一条 SQL 就能问出"到底哪些没刮干净"，不用再靠 last_scraped_at 反推。
     if not item.metadata_source and kind in ("series", "movie", "season", "episode"):
