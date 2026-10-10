@@ -190,10 +190,11 @@ def regenerate_cover_for_library(db: Session, lib: em.Library) -> str:
     """
     if not lib.cover_template:
         raise CoverRegenError("该媒体库没有配置封面样式，先选一个样式并保存", 400)
+    # 标题为空时默认用库名：重建库/未配置标题时封面也要有字，不能出无字封面
     data = render_cover_bytes(
         db, lib,
         template=lib.cover_template,
-        title=lib.cover_title or "",
+        title=lib.cover_title or lib.name or "",
         subtitle=lib.cover_subtitle or "",
     )
     if not data:
