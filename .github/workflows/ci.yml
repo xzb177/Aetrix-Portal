@@ -77,6 +77,9 @@ jobs:
     name: 后端 · 冒烟测试
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # fail-fast：每个步骤都有自己的超时（冒烟脚本 5 分钟 / pytest 10 分钟）。
+    # 之前没有单步超时，真卡死时只能等 job 级 25 分钟，看起来像"CI 卡住不动"；
+    # 现在卡死会快速失败并明确报超时，而不是静默转圈。
     env:
       DATABASE_TYPE: sqlite
       DATABASE_URL: sqlite:///./ci-smoke.db
@@ -91,94 +94,113 @@ jobs:
           cache-dependency-path: backend/requirements.txt
 
       - name: 安装后端依赖
+        timeout-minutes: 5
         run: pip install -r backend/requirements.txt
 
       # 可选依赖 zhconv（繁简互搜）。它**不在** requirements.txt 里——未安装时搜索会自动
       # 降级为不做转换而不是崩掉，这是有意的设计。但门禁要覆盖这个特性，所以 CI 显式装上，
       # 让 smoke_test_media_search 的繁简断言真跑（否则那一条只会 SKIP，等于没测）。
       - name: 安装可选依赖（繁简互搜）
+        timeout-minutes: 5
         run: pip install zhconv
 
       # 纯文本契约检查，最先跑：把「async 端点改成同步 def、但别处还在 await 它」
       # 这类只有真打到那个请求才炸的改动挡在门口（性能整改会反复做这类改造）。
       - name: await 契约检查（await 的目标必须是协程函数）
+        timeout-minutes: 5
         run: python scripts/check_await_consistency.py
 
       # 硬编码凭据检查：公开仓库里写死密钥 = 已泄露，只能作废重发。
       # 真实起因为 scripts/check_emby_sync.sh 里写死的 Emby API Key（v2.30.0 移出）。
       - name: 硬编码密钥检查（仓库里不许出现像真的密钥）
+        timeout-minutes: 5
         run: python scripts/check_hardcoded_secrets.py
 
       # 版本号单一来源：根目录 VERSION 为准，后端与两个前端不许各写一份。
       # 曾经 /api/health 报 2.33、CHANGELOG 已经 2.34，谁也说不清线上跑的是哪个。
       - name: 版本号一致性检查（VERSION / 前端 package / 后端不许漂移）
+        timeout-minutes: 5
         run: python scripts/check_version.py
 
       # 品牌契约检查：改品牌（统一到 Aetrix）后残留的旧名，类型检查 / 导入 / 冒烟全绿
       # 也看不出来（它只是一段字符串），但漏改的 EMBY_SERVER_ID 默认值会真的改变行为。
       # 确实需要旧名（老部署的库文件名等）就在同一行写 `brand-scan: allow` 并说明原因。
       - name: 品牌契约检查（仓库里不许再出现旧品牌名）
+        timeout-minutes: 5
         run: python scripts/check_branding.py
 
       # 管理端写端点审计覆盖：`/api/admin/emby/*` 由中间件记，其余域靠端点自己调 `_audit()`——
       # 而「记得」不是一种机制。真实起因为 POST /api/admin/tickets/{id}/close 关单并推送用户，
       # 却一条审计都不写（两个兄弟端点都写了）。这条看的是**真实路由**而不是文件。
       - name: 管理端写端点审计覆盖（每个写端点都要留审计）
+        timeout-minutes: 5
         run: python scripts/check_admin_audit_coverage.py
 
       # 写端点鉴权覆盖：漏掉一个 `Depends(get_current_user)` 不会让任何检查变红——
       # 路由照常注册、类型检查照常通过、已有冒烟也不会去点那个新端点。
       # 免鉴权端点（注册 / 登录 / 网关回调）必须显式登记并写明替代机制。
       - name: 写端点鉴权覆盖（每个写端点都要有鉴权）
+        timeout-minutes: 5
         run: python scripts/check_auth_coverage.py
 
       # 管理端 API 契约：前端封装的每个路径都必须真实存在。写错一个字符运行时就是
       # 404，表现是「按钮点了没反应」——类型检查与构建都抓不到。运行时 introspect
       # 后端路由表（不是扫源码），顺带报出「后端做了但前端没入口」的端点。
       - name: 管理端 API 契约（前端调用的端点必须存在）
+        timeout-minutes: 5
         run: python scripts/check_admin_api_contract.py
 
       # 另一条同源护栏：async 路由里不许出现同步 SQLAlchemy（FastAPI 只在事件循环上跑
       # async 端点）。存量记在脚本的 BASELINE 里，只许减少不许增加。
       - name: 阻塞路由契约检查（async 路由里做同步 DB 只减不增）
+        timeout-minutes: 5
         run: python scripts/check_blocking_routes.py
 
       # 发行镜像的 target 契约：默认产物必须是精简版（不带 scripts/），
       # 发布流水线必须显式 --target runtime，自建 compose 必须用 with-scripts。
       # 这几个不变量的共同点是「破坏时不报错」—— 只靠 review 看不住。
       - name: 发行镜像 target 契约（客户镜像不带 scripts/）
+        timeout-minutes: 5
         run: python scripts/check_image_targets.py
 
       # 授权版环境变量契约：env.example / 编排 / DEPLOY.md 三者必须一致。
       # 客户的部署动作只有「照文档敲几条命令」，所以三者之间任何不一致
       # 都是启动阻断（历史上真出现过：改密码后连接串不同步、Redis 被关掉）。
       - name: 授权版环境变量契约（照文档能起得来）
+        timeout-minutes: 5
         run: python scripts/check_env_contract.py
 
       # 不依赖前端构建产物，所以单独一个 job，改后端时能更快拿到反馈
       - name: 门户认证端到端（注册 → 登录 → me → refresh → 改密）
+        timeout-minutes: 5
         run: python scripts/smoke_test_auth.py
 
       - name: 管理端接口冒烟（含后台免登 / 非管理员被拒）
+        timeout-minutes: 5
         run: python scripts/smoke_test_admin_v240.py
 
       - name: 管理员账号工具冒烟（建号 / 升级 / 重置密码 / 真实登录）
+        timeout-minutes: 5
         run: python scripts/smoke_test_admin_account.py
 
       - name: Emby 双模式联动冒烟（EA / 已有 Emby 与自建功能闸门）
+        timeout-minutes: 5
         run: python scripts/smoke_test_emby_connection.py
 
       - name: Emby 会话端点鉴权冒烟（匿名 401 / 越权 403 / 随机会话键）
+        timeout-minutes: 5
         run: python scripts/smoke_test_emby_sessions.py
 
       # 后台角色与权限（v2.26.0）：升级上来的老管理员按 super 处理（权限与升级前一致）、
       # 只读角色拦一切写操作、运营改不了系统设置与管理员本身、最后一名 super 不能降级/撤销。
       - name: 管理员角色与权限冒烟（角色判定 / 写权限边界 / 三条护栏）
+        timeout-minutes: 5
         run: python scripts/smoke_test_admin_roles.py
 
       # 播放与客户端策略（v2.26.0）：转码开关 / 并发上限 / 码率上限 / 客户端准入。
       # 缺省必须与升级前完全一致（允许转码、不限并发、不限码率、不拦客户端）。
       - name: 客户端策略冒烟（转码开关 / 并发与码率上限 / 客户端准入）
+        timeout-minutes: 5
         run: python scripts/smoke_test_client_policy.py
 
       # 媒体与交付域的写操作审计（v2.30.0）：/api/admin/emby/* 的成功写操作要落进「操作日志」。
@@ -186,145 +208,178 @@ jobs:
       # 写这条护栏时真的抓到三个 bug：`115` 被当成 id（4 条动作名全成死条目）、
       # 会话键正则不认 base64url（「结束会话」没有名字）、子动作被记成父动作（测试挂载 → 创建挂载）。
       - name: 后台写操作审计冒烟（落库 / 只记成功 / 不记密钥 / 端点覆盖）
+        timeout-minutes: 5
         run: python scripts/smoke_test_admin_audit.py
 
       # 自建后端的完整链路（扫描入库 → 媒体库/条目 → 播放信息 → 停止会话）。
       # 这条是 EM 的“主干道”，此前只在开发机上跑过；ffmpeg 不在时 HLS 段自动 SKIP。
       - name: Emby 后端主链路冒烟（扫描 / 媒体库 / 条目 / 播放 / 停止）
+        timeout-minutes: 5
         run: python scripts/smoke_test_emby.py
 
       # 网关：客户端带着 X-Emby-Token / api_key 打进来，要能落到正确的用户与权限上，
       # 且匿名与错键不能借网关绕过鉴权。
       - name: Emby 网关冒烟（令牌落地 / 匿名与错键不放行）
+        timeout-minutes: 5
         run: python scripts/smoke_test_emby_gateway.py
 
       # EM/EA 分离部署：两边各自鉴权、跨服务器取流、配置缺失时的降级。
       # 分离是我们推荐的部署形态，而这条链路此前没有门禁。
       - name: EM/EA 分离部署冒烟（双边鉴权 / 跨服取流 / 降级）
+        timeout-minutes: 5
         run: python scripts/smoke_test_ea_split.py
 
       - name: 安全加固冒烟（WS 鉴权 / 通知鉴权 / 健康检查 / 入口地址 / 后台登录审计）
+        timeout-minutes: 5
         run: python scripts/smoke_test_security_hardening.py
 
       - name: 并发与经济链冒烟（兑换码/签到防重、积分不丢更新、邀请幂等、限流 IP）
+        timeout-minutes: 5
         run: python scripts/smoke_test_concurrency.py
 
       - name: 播放入口链路冒烟（付费墙 / PlaybackInfo / 直连流与 Range / 无路径条目）
+        timeout-minutes: 5
         run: python scripts/smoke_test_playback_chain.py
 
       # 付费墙单独一条：非会员可看见条目但不能播、下载被拦、有权限后立刻放行。
       - name: 付费墙冒烟（可浏览 / 不可播 / 下载策略 / 开通即放行）
+        timeout-minutes: 5
         run: python scripts/smoke_test_paywall.py
 
       # 转码停止原先是「事件循环上等子进程退出 + 递归删分片」：停一次转码 = 全站卡住。
       # 这里用后台心跳量事件循环被占住多久（同步基线 ≥0.5s vs 异步 <0.15s），并从真实路由
       # 打进去验证「结束播放真的释放了转码」（播放会话键与转码 id 不是一回事）。
       - name: 转码停止冒烟（不阻塞事件循环 / 真的停掉转码 / 并发停止）
+        timeout-minutes: 5
         run: python scripts/smoke_test_transcode_stop.py
 
       - name: 运营能力冒烟（卡码 / 设备风控 / 登录日志 / 公告与广播送审）
+        timeout-minutes: 5
         run: python scripts/smoke_test_ops_v260.py
 
       - name: 经济系统端到端冒烟（签到 / 兑换 / 邀请 / 支付回调 / 履约通知）
+        timeout-minutes: 5
         run: python scripts/smoke_test_economy.py
 
       - name: 用户端查漏补缺冒烟（VIP 派生 / 工单通知 / 求片链路）
+        timeout-minutes: 5
         run: python scripts/smoke_test_v251.py
 
       - name: 用户端 v2.5.0 冒烟（浏览 / 搜索 / 收藏 / 播放记录口径）
+        timeout-minutes: 5
         run: python scripts/smoke_test_user_v250.py
 
       # 全站搜索：标题 / 别名 / 分类命中、分页口径、无结果不报错。
       - name: 媒体搜索冒烟（标题与别名命中 / 分页 / 空结果）
+        timeout-minutes: 5
         run: python scripts/smoke_test_media_search.py
 
       - name: 挂载体检冒烟（EA 视角可达性 / 面板体检落库 / EM 拉取 EA）
+        timeout-minutes: 5
         run: python scripts/smoke_test_mount_health.py
 
       # 存储挂载本体（本地目录 / rclone rc / WebDAV / STRM 的列举与播放 URL 组装）。
       # 播放取流的第一跳就是这里，错一点就是“点开没反应”。
       - name: 存储挂载冒烟（本地 / rclone rc / WebDAV / STRM 列举与取流）
+        timeout-minutes: 5
         run: python scripts/smoke_test_mounts.py
 
       - name: 服务器与求片转交冒烟（多服务器 / 当前使用切换 / MoviePilot 与 qB）
+        timeout-minutes: 5
         run: python scripts/smoke_test_servers.py
 
       - name: 多服运营冒烟（默认服兼容 / 套餐与会员按服 / 共用内容自动化 / 多节点内容边界）
+        timeout-minutes: 5
         run: python scripts/smoke_test_realms.py
 
       # 一个面板同时运营付费服与公益服：免费开放按服判定、默认禁下载、切回付费服立刻恢复付费墙
       - name: 公益服冒烟（免费开放 / 按服判定 / 下载策略 / 面板口径）
+        timeout-minutes: 5
         run: python scripts/smoke_test_free_realm.py
 
       # 会员到期前要有人提醒（否则续费只能指望用户自己想起来）：档位窗口、
       # 一档只发一次、档位推进会补发、到期通知、开关与自定义档位、面板口径与鉴权
       - name: 到期提醒冒烟（窗口 / 去重幂等 / 档位推进 / 面板口径）
+        timeout-minutes: 5
         run: python scripts/smoke_test_reminders.py
 
       # 订单要能关、能退：关单只针对未支付单；退款按账本冲正（积分 + 邀请返利）、
       # 订阅按订单回滚天数、余额不足不硬扣、退过的订单不能被回调重放再发一次货
       - name: 订单退款/关单冒烟（账本冲正 / 天数回滚 / 幂等与鉴权）
+        timeout-minutes: 5
         run: python scripts/smoke_test_refunds.py
 
       # 优惠券：额度是预订制的（下单占 / 付款用 / 关单退款还），预览与实付同口径，
       # 超发防得住、订单金额=实付、超时未支付自动收尾、运营面与鉴权
       - name: 优惠券冒烟（预订制额度 / 折扣口径 / 超发与限用 / 自动收尾 / 运营面）
+        timeout-minutes: 5
         run: python scripts/smoke_test_coupons.py
 
       # 只测「升级上来的老库」：自动迁移漏列时全新库一切正常、老库直接 500，
       # 只有拿旧形态的库跑一遍才拦得住
       - name: 升级路径冒烟（老库补列 / 迁移幂等 / 后台首页不再 500）
+        timeout-minutes: 5
         run: python scripts/smoke_test_schema_migration.py
 
       # 扫描器是自建后端的资源大户：这条只守“资源行为”（批量查库 / 批量落盘 / 并行 IO / 目录与 TMDB 缓存）
       - name: 扫描资源预算冒烟（批次化 / 并行探测与刮削 / 目录只列一次）
+        timeout-minutes: 5
         run: python scripts/smoke_test_scan_budget.py
 
       # “能跑很久”这件事也要有门禁：崩溃残留的收尾、过期会话回收、临时文件与
       # 孤儿子进程、健康检查是常数级、扫描清理不整库载入内存也不留孤儿行
       - name: 长期运行稳定性冒烟（维护看护 / 临时文件 / 清理阶段资源与数据完整性）
+        timeout-minutes: 5
         run: python scripts/smoke_test_maintenance.py
 
       # v2.35.0 四条后端提速/稳定性改动各钉一条：会话上报下放线程池（心跳量事件循环空洞；
       # 基线自证在先）、分类菜单不再读整列（数 SQL，老库退回旧口径取值一致）、
       # 筛选菜单缓存「扫完就能看见、但不会每请求重建」（SQL 计数）、/Items/Counts 合并 GROUP BY 后计数正确。
       - name: 后端热路径与稳定性冒烟（事件循环空洞 / 菜单 SQL / 缓存刷新节奏）
+        timeout-minutes: 5
         run: python scripts/smoke_test_backend_hot_paths.py
 
       # 清理阶段的边界：来源目录读不到时必须**跳过**清理（不能把全库当删除），
       # 文件回来要能复活条目。误清理是不可逆事故，得单独钉住。
       - name: 扫描清理阶段冒烟（来源不可读则跳过 / 条目复活 / 不误删）
+        timeout-minutes: 5
         run: python scripts/smoke_test_scan_cleanup.py
 
       # 扫描结果要能查、而且要诚实：没扫过 ≠ 扫了都是 0；有来源读不到是 partial（已跳过清理）
       # 而不是 success；异常必须留下原因且把互斥与 is_scanning 都复位（否则这个库再也扫不动）。
       - name: 扫描结果可查冒烟（落库 / partial 口径 / 异常不卡死）
+        timeout-minutes: 5
         run: python scripts/smoke_test_scan_result.py
 
       # tests/ 下的单元测试（播放地址口径 / 路径沙箱这类纯逻辑）。以前它们没有任何运行入口，
       # 写完就只能靠人记得手动跑——于是“播放地址口径改坏了”只能在冒烟里才暴露。
       - name: 单元测试（pytest：媒体路径沙箱与播放地址口径）
+        timeout-minutes: 10
         run: |
           pip install pytest
           python -m pytest tests/ -q
 
       - name: 静态护栏自检（每条护栏喂违规样本都会失败、合规样本不误报）
+        timeout-minutes: 5
         run: python scripts/smoke_test_static_guards.py
 
       # 分类筛选从「逗号文本列 LIKE 全表扫」换成「条目↔分类关联表 + 索引」：
       # 写入侧自动同步（ORM 钩子）、老库自动补块、结果与旧口径逐条一致、
       # 索引真的被用上（EXPLAIN QUERY PLAN），3000 条规模也不退化
       - name: 分类筛选索引冒烟（关联表同步 / 老库补块 / 结果一致 / 索引证据）
+        timeout-minutes: 5
         run: python scripts/smoke_test_item_facets.py
 
       # 升级现场：关联表回填到一半进程被杀 / 重启续跑 / 降级与索引两条路结果逐条一致 /
       # 读请求的补块预算与冷却。这些场景在开发机上很难自然遇到，但真实老库升级必经过。
       - name: 分类关联表升级演练（中断续跑 / 降级口径 / 补块预算）
+        timeout-minutes: 5
         run: python scripts/smoke_test_item_facets_upgrade.py
 
       # 增量扫描：未变动重扫不再逐文件写库（但条目一条不能少）、变了一定处理、
       # 库里缺行必须重建、远程挂载参与增量且不多列目录。这顶的是「追新」这个最常用的路径。
       - name: 增量扫描冒烟（目录指纹 / 跳过与安全的边界 / 远程挂载）
+        timeout-minutes: 5
         run: python scripts/smoke_test_scan_incremental.py
 
       # 扫描 × 写接口并发（v2.38.0）：线上现场是「后台扫一次库，前端点什么都要转 30 秒」，
@@ -332,6 +387,7 @@ jobs:
       # 这里给真实的 IO 出口装探针，检查「IO 有没有落在未提交的写事务里」（探针先自证有效），
       # 同时一边全量扫描一边循环打真实写接口，量延迟并抓 database is locked。
       - name: 扫描 × 写接口并发冒烟（写事务里零 IO / 前端不再超时）
+        timeout-minutes: 5
         run: python scripts/smoke_test_scan_write_concurrency.py
 
       # 扫描队列（v2.27.0）：一次线上日志审计的结论——四个库同一分钟里点扫描，四个任务
@@ -340,6 +396,7 @@ jobs:
       # 一轮扫描内同一目录只列一次、远程并发上限、实时进度（阶段/已发现/已处理/当前目录），
       # 以及队列关掉时回到升级前行为。
       - name: 扫描队列冒烟（按挂载串行化 / 并发上限 / 排队与取消 / 进度 / 远程限流）
+        timeout-minutes: 5
         run: python scripts/smoke_test_scan_queue.py
 
       # 那条审计现场的复现：四个库连点扫描（三个指向同一个挂载）+ 真 WebDAV 服务端 + 真接口，
@@ -347,6 +404,7 @@ jobs:
       # 断言盯的是两边的结构性事实：升级前四个库同时在跑且同一挂载上叠着多个任务；
       # 现在最多 2 个同时在跑、同一挂载零重叠、有库被明确告知在等哪个挂载、四个库都不失败。
       - name: 扫描队列并发演练（四库同时点扫描：真 WebDAV + 真接口 + 升级前后对照）
+        timeout-minutes: 5
         run: python scripts/verify_scan_queue_concurrency.py
 
       # 播放可达性（v2.28.0）：推荐拓扑是 EM 控制面 / EA 数据面 / 独立 PostgreSQL / 统一媒体存储。
@@ -356,33 +414,39 @@ jobs:
       # 在「面板出流、EA 出流（有/无体检证据）、已有 Emby」各组合下的结论与改法，
       # 以及用户端地址一致性与两个接口的出参。
       - name: 播放可达性冒烟（本机路径 / local 挂载 / 共享挂载 / 地址一致性 / 接口）
+        timeout-minutes: 5
         run: python scripts/smoke_test_reachability.py
 
       # 挂载目录列举缓存：扫描与播放共用一份、TTL、单飞、失败不缓存（不带病吃旧结果）。
       # 播放方向以前每次都重新逐级列目录，这顶的是「看一个片要问网盘好几次」。
       - name: 挂载目录列举缓存冒烟（共用 / TTL / 单飞 / 115 raw 列表）
+        timeout-minutes: 5
         run: python scripts/smoke_test_mount_cache.py
 
       # 图片本地化：落盘与自愈、失败退回代理、清理与容量上限（有引用的图绝不能删）。
       - name: 图片本地化冒烟（落盘 / 自愈 / 失败回退 / 清理与上限）
+        timeout-minutes: 5
         run: python scripts/smoke_test_image_localize.py
 
       # 115：v2.18.0 起只留「账号 + 直挂」。这个脚本以前没在 CI 里跑过（它当时覆盖的
       # 转存任务已经下线），现在它同时钉住保留的能力与「转存接口 / 任务模型已不存在」——
       # 免得谁把半边能力顺手删掉、或者把一个已经下线的端点接回来。
       - name: 115 账号与直挂冒烟（账号 API / Cookie 优先级 / 客户端 / 转存已下线护栏）
+        timeout-minutes: 5
         run: python scripts/smoke_test_115.py
 
       # 外部服务能力中心（v2.19.0）：代理 / 人机验证 / 邮件 / Telegram / AI / IP 归属地。
       # 这些能力全都靠管理员自己填的凭据才能用，所以这里钉的是「没填时必须无害」
       # （放行 / 不显示 / 不查外部）、「填了必须真生效」与「密钥永不明文回显」。
       - name: 外部服务能力中心冒烟（代理 / 验证 / 邮件 / TG / AI / 归属地）
+        timeout-minutes: 5
         run: python scripts/smoke_test_capabilities.py
 
       # 性能护栏：只跑 2 万条、几秒钟，判定用的是**比值**而不是耗时，所以不受 CI 机器快慢影响。
       # 之前只有“功能正确”的门禁——把索引路径改回全表扫描、或在写入钩子里塞逐条查询，
       # 依赖都是绿的。真差距是阈值的几十倍，只有真改坏了才会红。
       - name: 分类筛选性能护栏（比值阈值 / 索引路径不能退化）
+        timeout-minutes: 5
         run: python scripts/benchmark_item_facets.py --guard
 
   backend-pg:
