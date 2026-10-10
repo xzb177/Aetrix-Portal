@@ -45,6 +45,41 @@ POLL_INTERVAL = max(60, int(os.getenv("DRIVE_CHANGES_INTERVAL", "300") or 300))
 TOKEN_KEY_PREFIX = "drive_changes_page_token_"
 #: 开关
 ENABLED = (os.getenv("DRIVE_CHANGES_ENABLED", "1") or "1").strip().lower() not in {"0", "false", "no", "off"}
+#: 共享盘 404（ID 无效/被删/SA 无权）后的退避秒数，默认 24 小时，最小 1 小时。
+#: 404 是永久性配置问题，每 5 分钟重试毫无意义，退避期内直接跳过该盘。
+DEAD_DRIVE_RETRY_SEC = max(3600, int(os.getenv("DRIVE_CHANGES_DEAD_RETRY_SEC", "86400") or 86400))
+
+#: drive_id -> 标记为 dead 的时间戳（time.time()）。内存态，重启后清零。
+_dead_drives: dict[str, float] = {}
+_dead_lock = threading.Lock()
+
+
+class DriveNotFoundError(Exception):
+    """Drive API 返回 404：drive_id 无效（共享盘被删 / ID 写错 / SA 无权访问）。
+
+    属于永久性配置问题，调用方不应每轮重试，而应标记 dead 并退避。
+    """
+
+    def __init__(self, drive_id: str):
+        super().__init__(f"drive_id 无效（404）: {drive_id}")
+        self.drive_id = drive_id
+
+
+def _is_dead_drive(drive_id: str) -> bool:
+    """该盘是否在 404 退避期内。过期则清除标记并返回 False（允许再试一次）。"""
+    with _dead_lock:
+        ts = _dead_drives.get(drive_id)
+        if ts is None:
+            return False
+        if time.time() - ts >= DEAD_DRIVE_RETRY_SEC:
+            del _dead_drives[drive_id]
+            return False
+        return True
+
+
+def _mark_dead_drive(drive_id: str) -> None:
+    with _dead_lock:
+        _dead_drives[drive_id] = time.time()
 
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -190,6 +225,12 @@ def _api_get(url: str, token: str, params: dict) -> dict:
     )
     if resp.status_code == 401:
         raise PermissionError("Drive token 无效或过期")
+    if resp.status_code == 404:
+        # drive_id 永久性无效（共享盘被删 / ID 写错 / SA 无权访问，
+        # Drive API 对这三种情况都返回 404），抛专用异常让调用方退避，
+        # 不要当成普通错误每 5 分钟重试。
+        drive_id = (params or {}).get("driveId", "")
+        raise DriveNotFoundError(drive_id)
     resp.raise_for_status()
     return resp.json()
 
@@ -206,6 +247,8 @@ def get_start_page_token(drive_id: str) -> str | None:
             "supportsAllDrives": "true",
         })
         return body.get("startPageToken")
+    except DriveNotFoundError:
+        raise
     except Exception as exc:
         logger.error("Drive Changes: getStartPageToken 失败 drive=%s: %s", drive_id, exc)
         return None
@@ -240,6 +283,8 @@ def list_changes(page_token: str, drive_id: str) -> tuple[list[dict], str | None
             new_start = body.get("newStartPageToken") or new_start
             next_token = body.get("nextPageToken")
         return all_changes, new_start
+    except DriveNotFoundError:
+        raise
     except Exception as exc:
         logger.error("Drive Changes: list 失败 drive=%s: %s", drive_id, exc)
         return [], None
@@ -553,15 +598,31 @@ def poll_once() -> dict:
     try:
         for drive_id in drives:
             stats["drives"] += 1
-            page_token = _get_page_token(db, drive_id)
-            if not page_token:
-                # 首次：只存 token，不触发扫描（下次从这里开始算增量）
-                token = get_start_page_token(drive_id)
-                if token:
-                    _save_page_token(db, drive_id, token)
-                    logger.info("Drive Changes: drive %s 初始化 page token", drive_id)
+            if _is_dead_drive(drive_id):
+                # 404 退避期内：跳过，不再请求 API、不再打 error 日志
+                logger.debug("Drive Changes: drive %s 在 404 退避期内，跳过", drive_id)
                 continue
-            changes, new_token = list_changes(page_token, drive_id)
+            try:
+                page_token = _get_page_token(db, drive_id)
+                if not page_token:
+                    # 首次：只存 token，不触发扫描（下次从这里开始算增量）
+                    token = get_start_page_token(drive_id)
+                    if token:
+                        _save_page_token(db, drive_id, token)
+                        logger.info("Drive Changes: drive %s 初始化 page token", drive_id)
+                    continue
+                changes, new_token = list_changes(page_token, drive_id)
+            except DriveNotFoundError:
+                # drive_id 永久性无效：标记 dead 并退避，error 日志只打一次
+                _mark_dead_drive(drive_id)
+                logger.error(
+                    "Drive Changes: 共享盘 ID 无效 drive=%s（Drive API 返回 404），"
+                    "请检查 rclone.conf 中对应 remote 的 team_drive 是否写错、"
+                    "共享盘是否被删除、SA 是否有访问权限；"
+                    "该盘已暂停增量发现 %d 小时，之后会自动再试一次",
+                    drive_id, DEAD_DRIVE_RETRY_SEC // 3600,
+                )
+                continue
             stats["changes"] += len(changes)
             if new_token:
                 _save_page_token(db, drive_id, new_token)
