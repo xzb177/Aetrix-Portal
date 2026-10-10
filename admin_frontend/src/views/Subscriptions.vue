@@ -12,7 +12,7 @@
  * （外面包一层 button，选中走琥珀描边）· 到期提醒与订阅清单都换成 SectionCard，
  * 清单是 flush 表格 + 统一工具条；加载失败给可重试的错误态。
  */
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   AlertTriangle, BellRing, CalendarClock, Crown, ListChecks, RefreshCw, Search, TimerOff, Users,
@@ -66,7 +66,15 @@ function filterBy(status: string) {
 }
 const plans = ref<PlanRow[]>([])
 
+/** 请求序号：连续切筛选 / 范围时只采纳最后一次请求，避免旧响应覆盖新结果 */
+let loadSeq = 0
+/** 最近一次实际查询用的关键字：防抖回调据此跳过重复查询 */
+let lastSearch = ''
+
 async function load() {
+  const seq = ++loadSeq
+  clearTimeout(searchTimer)
+  lastSearch = search.value.trim()
   loading.value = true
   loadError.value = false
   try {
@@ -75,16 +83,28 @@ async function load() {
     if (search.value.trim()) params.search = search.value.trim()
     // realm_id=0 → 全部服；其余按服过滤（后端 `active_realm_id` 作为兜底）
     const res = await fetchRealmSubscriptions(scope.value === 'all' ? 0 : realm.activeId ?? 0, params)
+    if (seq !== loadSeq) return
     rows.value = res.subscriptions
     summary.value = res.summary
     scopeRealmName.value = res.realm_name
   } catch {
+    if (seq !== loadSeq) return
     // 错误提示由 HTTP 拦截器统一处理；这里只记下「失败了」好给出重试入口
     loadError.value = true
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
+
+/** 搜索框输入防抖：停手 350ms 自动查询（回车 / 清空仍立即查询） */
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+watch(search, (value) => {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    if (value.trim() !== lastSearch) load()
+  }, 350)
+})
+onBeforeUnmount(() => clearTimeout(searchTimer))
 
 /** 可授予的套餐：跨服汇总时列出全部服的套餐（授予时按套餐所属的服开会员） */
 async function loadPlans() {
@@ -95,10 +115,11 @@ async function loadPlans() {
   }
 }
 
-onMounted(async () => {
-  await load()
-  await loadPlans()
-  await loadReminders()
+// 三个接口互不依赖：并行拉，别排成瀑布（原来要等清单回来才开始拉套餐与提醒状态）
+onMounted(() => {
+  load()
+  loadPlans()
+  loadReminders()
 })
 
 function onScopeChange() {
@@ -471,7 +492,7 @@ async function submit() {
     <el-dialog
       v-model="dialog.visible"
       :title="dialog.mode === 'extend' ? '延长订阅' : '续订 / 授予订阅'"
-      width="440px"
+      width="min(440px, 92vw)"
     >
       <el-form label-position="top">
         <el-form-item label="用户">

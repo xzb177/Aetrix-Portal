@@ -48,6 +48,8 @@ useQueryFilter(statusFilter, 'status', load)
 const busyId = ref<number | null>(null)
 /** 哪几类外部服务已经接好（用于决定显示哪些推送按钮） */
 const pushReady = ref<ServerKind[]>([])
+/** 可转交目标查过一次之后才显示「还没有可接收求片的服务」，免得进页时先闪一下 */
+const pushChecked = ref(false)
 
 const canMoviePilot = computed(() => pushReady.value.includes('moviepilot'))
 const canQbittorrent = computed(() => pushReady.value.includes('qbittorrent'))
@@ -65,13 +67,26 @@ async function load() {
     // 求片登记的是「给哪个服求」；realm_id=0 = 全部服（后端未标注的也算进来）
     params.realm_id = scope.value === 'all' ? 0 : (realm.activeId ?? 0)
     list.value = await fetchMediaSeeks(params)
-    // 服务器没接好时按钮点了也只会失败，所以这里如实反映当前可用目标
-    const summary = await fetchServersSummary()
-    pushReady.value = summary.push_ready || []
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : '加载失败'
   } finally {
     loading.value = false
+  }
+}
+
+/**
+ * 可转交的外部服务：服务器没接好时按钮点了也只会失败，所以如实反映当前可用目标。
+ * 只在进页时拉一次——以前每次切筛选 / 排序 / 范围都跟着列表重拉一遍，而且它失败会把
+ * 整张求片列表打成错误态（列表本身其实拉到了）。
+ */
+async function loadPushTargets() {
+  try {
+    const summary = await fetchServersSummary()
+    pushReady.value = summary.push_ready || []
+  } catch {
+    pushReady.value = []
+  } finally {
+    pushChecked.value = true
   }
 }
 
@@ -209,7 +224,10 @@ function pushLabel(target: string | null): string {
   return target || '—'
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadPushTargets()
+})
 
 function fmtDate(s: string): string {
   return s.slice(0, 16).replace('T', ' ')
@@ -249,7 +267,7 @@ function statusLabel(status: string): string {
     </PageHeader>
 
     <!-- 没接好 MoviePilot / qB 时，求片批了也没法真的把片子弄进来：如实说明并给出入口 -->
-    <el-alert v-if="noPushTarget && !loading && !loadError" type="warning" :closable="false" show-icon class="push-guide">
+    <el-alert v-if="pushChecked && noPushTarget && !loading && !loadError" type="warning" :closable="false" show-icon class="push-guide">
       <template #default>
         还没有可以接收求片的服务：请在<RouterLink to="/servers" class="inline-link">「服务器与线路」</RouterLink>页添加
         <b>MoviePilot</b>（搜片下载与整理）或 <b>qBittorrent</b>（下载器），测试连接通过后这里就会出现转交按钮。
@@ -354,7 +372,7 @@ function statusLabel(status: string): string {
     <el-dialog
       v-model="handle.visible"
       :title="handle.row ? `处理求片《${handle.row.movie_name}》` : '处理求片'"
-      width="560px"
+      width="min(560px, 92vw)"
     >
       <div v-if="handle.row" class="handle-body">
         <div class="kv-list">

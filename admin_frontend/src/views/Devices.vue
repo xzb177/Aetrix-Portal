@@ -38,17 +38,18 @@ async function load() {
   loading.value = true
   loadError.value = ''
   try {
+    // 统计读不到只隐藏顶部瓦片，不连累设备清单
     const [list, stat] = await Promise.all([
       fetchDevices({
         keyword: filters.value.keyword || undefined,
         only_blocked: filters.value.only_blocked || undefined,
         limit: 300,
       }),
-      fetchDeviceStats(),
+      fetchDeviceStats().catch(() => null),
     ])
     devices.value = list.devices
     total.value = list.total
-    stats.value = stat
+    if (stat) stats.value = stat
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : '加载失败'
   } finally {
@@ -111,6 +112,8 @@ async function toggleBlock(row: DeviceRow) {
     const res = await setDeviceBlocked(row.user_id, row.device_id, !row.is_blocked)
     ElMessage.success(res.message)
     await afterAction(row)
+  } catch {
+    // 拦截器已提示
   } finally {
     rowBusyKey.value = null
   }
@@ -132,6 +135,8 @@ async function kick(row: DeviceRow) {
     const res = await removeDevice(row.user_id, row.device_id)
     ElMessage.success(res.message)
     await afterAction(row)
+  } catch {
+    // 拦截器已提示
   } finally {
     rowBusyKey.value = null
   }
@@ -261,7 +266,7 @@ function ago(s: string | null): string {
     </SectionCard>
 
     <!-- 设备详情与处置（弹窗）：先把这台设备是什么说清楚，再动手 -->
-    <el-dialog v-model="detail.visible" title="设备详情与处置" width="540px">
+    <el-dialog v-model="detail.visible" title="设备详情与处置" width="min(540px, 92vw)">
       <div v-if="detail.row" class="dev-detail">
         <div class="kv-list">
           <div class="kv-row"><span class="kv-key">所属用户</span>

@@ -1218,7 +1218,18 @@ onMounted(() => {
         <div v-if="doubanLoading && !doubanCfg" class="ms-skeleton" aria-busy="true">
           <div class="au-skeleton" /><div class="au-skeleton" />
         </div>
-        <template v-else-if="doubanCfg">
+        <EmptyState
+          v-else-if="!doubanCfg"
+          compact
+          :icon="BookOpen"
+          title="读取豆瓣优先配置失败"
+          description="可能是网络或后端暂时不可用。"
+        >
+          <template #actions>
+            <el-button size="small" :loading="doubanLoading" @click="loadDouban">重试</el-button>
+          </template>
+        </EmptyState>
+        <template v-else>
           <div class="ms-switches">
             <div class="ms-switch">
               <el-switch v-model="doubanDraft.enabled" />
