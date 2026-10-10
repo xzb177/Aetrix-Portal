@@ -13,7 +13,7 @@ fi
 A=$(curl -s -m 10 -X POST $B/api/admin/auth/login -H "Content-Type: application/json" -d '{"username":"boss","password":"bossnew666"}')
 TOKEN=$(echo "$A" | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
 
-curl -s -m 10 "$B/api/admin/registration-codes" -H "Authorization: Bearer $TOKEN" | python3 -c '
+curl -s -m 10 "$B/api/admin/registration-codes/list" -H "Authorization: Bearer $TOKEN" | python3 -c '
 import sys, json
 for c in json.load(sys.stdin)["codes"]:
     users = [u["username"] for u in c["used_by"]]

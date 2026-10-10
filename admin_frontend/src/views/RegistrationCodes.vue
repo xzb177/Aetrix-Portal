@@ -23,7 +23,6 @@ import {
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
-  createRegistrationCodes,
   deleteRegistrationCode,
   fetchCodeList,
   fetchCodeStats,
@@ -243,12 +242,13 @@ async function saveMode() {
 
 /** 旧版「批量生成」入口保留：走类型化接口，默认注册码 */
 async function quickGenerate() {
-  const res = await createRegistrationCodes({
-    count: 5, max_uses: 1, expires_days: 30, note: '快捷生成',
+  const res = await generateCodes({
+    code_type: 1, // 注册码
+    count: 5, days: 30, max_uses: 1, expires_days: 30, note: '快捷生成',
     // 快捷生成不看列表范围：永远开「当前服」的会员（要选服请用类型化生成）
     realm_id: realm.activeId ?? undefined,
   })
-  generated.value = res.codes.map((c) => ({ code: c.code, days_text: '30 天' }))
+  generated.value = res.codes.map((c) => ({ code: c.code, days_text: c.days_text }))
   resultVisible.value = true
   ElMessage.success(`已生成 ${generated.value.length} 个注册码`)
   load()

@@ -197,7 +197,6 @@ with TestClient(app) as client:
         "/api/admin/stats/overview",
         "/api/admin/realms/overview",
         "/api/admin/media-seek",
-        "/api/admin/registration-codes",
         "/api/admin/registration-codes/list",
         "/api/admin/registration-codes/stats",
         "/api/admin/emby/libraries",

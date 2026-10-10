@@ -8,7 +8,7 @@
  * 搬去钱包页；本页只留「花钱 / 花积分」的入口。优惠券试算不再跟随分页
  * （本页无分页），改为两类商品同时试算、数据刷新后静默重算。
  */
-import { ref, computed, onMounted, onActivated, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onActivated, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import {
@@ -190,6 +190,68 @@ function resetCodeFeedback() {
   codePreview.value = null
   codeNotice.value = ''
 }
+
+// 优惠券即时验券：防抖定时器句柄与预检竞态序号
+let couponPreviewTimer: ReturnType<typeof setTimeout> | null = null
+let couponPreviewToken = 0
+
+/**
+ * 预检优惠券：仅当预览结果为有效优惠券且功能开启时，静默试算并应用
+ * 通过递增序号 token 丢弃过期结果，避免竞态
+ */
+async function previewCoupon(code: string) {
+  // 与已应用的券相同：跳过，避免重复请求
+  if (code === couponApplied.value) {
+    return
+  }
+  const token = ++couponPreviewToken
+  try {
+    const preview = await membershipApi.preview(code)
+    // 竞态丢弃：输入已变化则忽略本轮结果
+    if (token !== couponPreviewToken) {
+      return
+    }
+    // 仅优惠券且功能开启时静默试算；卡码/兑换码/无效码不做处理，等用户点"使用"走原流程
+    if (preview.kind === 'coupon' && preview.valid && couponEnabled.value) {
+      await applyCoupon(code, { silent: true })
+    }
+  } catch {
+    // 网络异常静默忽略：不弹 toast、不写错误提示
+  }
+}
+
+/**
+ * 核销输入防抖预检：输入长度 >= 4 且不在提交中时，800ms 后自动预检优惠券
+ * 输入清空时不触发预检，也不取消已应用的券
+ */
+watch(redeemCode, (code) => {
+  // 输入变化：作废上一轮在途预检，并清理未触发的定时器
+  couponPreviewToken++
+  if (couponPreviewTimer) {
+    clearTimeout(couponPreviewTimer)
+    couponPreviewTimer = null
+  }
+  // 长度不足（含空输入）：不触发预检
+  if (!code || code.length < 4) {
+    return
+  }
+  couponPreviewTimer = setTimeout(() => {
+    couponPreviewTimer = null
+    // 提交中跳过预检
+    if (redeemLoading.value) {
+      return
+    }
+    void previewCoupon(code)
+  }, 800)
+})
+
+// 组件卸载时清理防抖定时器
+onBeforeUnmount(() => {
+  if (couponPreviewTimer) {
+    clearTimeout(couponPreviewTimer)
+    couponPreviewTimer = null
+  }
+})
 
 async function handleRedeem() {
   const code = redeemCode.value.trim()

@@ -142,21 +142,7 @@ export const broadcastMessage = (data: { title: string; content: string }) =>
 
 // ==================== 卡码体系 ====================
 
-export const fetchRegistrationCodes = () =>
-  get<{ codes: RegistrationCode[] }>('/registration-codes')
-
-export const createRegistrationCodes = (data: {
-  count: number
-  max_uses: number
-  expires_days: number
-  note?: string
-  /** 这批码开通哪个服的会员（留空 = 当前服） */
-  realm_id?: number
-}) => post<{ codes: { code: string }[] }>('/registration-codes', data)
-
-export const updateRegistrationCode = (id: number, is_active: boolean) =>
-  put<{ success: boolean }>(`/registration-codes/${id}`, { is_active })
-
+/** 注册码门禁设置 */
 export const fetchRegistrationSettings = () => get<RegistrationSettings>('/settings/registration')
 
 export const updateRegistrationSettings = (data: {

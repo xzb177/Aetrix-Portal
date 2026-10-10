@@ -28,7 +28,7 @@ echo "== 4. auth/me =="
 curl -s -m 10 $B/api/admin/auth/me -H "Authorization: Bearer $TOKEN"; echo
 
 echo "== 5. 批量生成注册码(3个, 每个2次) =="
-C=$(curl -s -m 10 -X POST $B/api/admin/registration-codes -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"count":3,"max_uses":2}')
+C=$(curl -s -m 10 -X POST $B/api/admin/registration-codes/generate -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"code_type":1,"count":3,"days":30,"max_uses":2,"expires_days":30}')
 CODE=$(echo "$C" | python3 -c 'import sys,json;print(json.load(sys.stdin)["codes"][0]["code"])' 2>/dev/null)
 echo "$C" | python3 -c 'import sys,json;print("codes:",[c["code"] for c in json.load(sys.stdin)["codes"]])' || { echo "$C"; exit 1; }
 
@@ -43,7 +43,7 @@ R2=$(curl -s -m 10 -X POST $B/api/user/auth/register -H "Content-Type: applicati
 echo "$R2" | python3 -c 'import sys,json;print("coder uid =",json.load(sys.stdin).get("user",{}).get("id"))' 2>/dev/null || echo "$R2"
 
 echo "== 9. 注册码审计 =="
-curl -s -m 10 "$B/api/admin/registration-codes" -H "Authorization: Bearer $TOKEN" | python3 -c 'import sys,json;c=json.load(sys.stdin)["codes"][0];print("code",c["code"],": use",c["use_count"],"/",c["max_uses"],"used_by",[u["username"] for u in c["used_by"]])'
+curl -s -m 10 "$B/api/admin/registration-codes/list" -H "Authorization: Bearer $TOKEN" | python3 -c 'import sys,json;c=json.load(sys.stdin)["codes"][0];print("code",c["code"],": use",c["use_count"],"/",c["max_uses"],"used_by",[u["username"] for u in c["used_by"]])'
 
 echo "== 10. 用户管理: 列表/禁用/重置密码 =="
 curl -s -m 10 "$B/api/admin/users" -H "Authorization: Bearer $TOKEN" | python3 -c 'import sys,json;print("total users:",json.load(sys.stdin)["total"])'
