@@ -24,7 +24,7 @@ import {
   Menu, X, ChevronDown, RefreshCw, LogOut, KeyRound, ExternalLink, Clapperboard,
   CheckCircle2, Route as RealmIcon, Lock, Search, Wallet, Crown, MessageSquareDashed,
   TriangleAlert, ScrollText, Smartphone, MonitorCog, ShieldAlert, Ban, Library, Eye,
-  Database, Cloud, Megaphone, Receipt, Gift, Trophy, TicketPercent, UserPlus, KeySquare,
+  Database, Cloud, Megaphone, Receipt, Trophy, TicketPercent, UserPlus, KeySquare,
   UserCog, Activity, Heart,
   Sun, Moon, MonitorSmartphone,
 } from 'lucide-vue-next'
