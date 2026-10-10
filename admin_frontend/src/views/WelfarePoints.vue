@@ -9,19 +9,11 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ArrowLeftRight, Bot, Coins, Gift, MessageCircle, MessageSquareDashed, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
-import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
-import { useBreakpoint } from '@/composables/useBreakpoint'
+import { PageHeader, SectionCard } from '@/components/ui'
 import { fetchWelfareConfig, saveWelfareConfig } from '@/api/welfare'
-
-const { isPhone } = useBreakpoint()
-/** 窄屏标签放到输入框上方，120px 的左侧标签会把输入框挤出屏幕 */
-const labelPosition = computed(() => (isPhone.value ? 'top' : 'right'))
 
 const loading = ref(false)
 const saving = ref(false)
-const loadError = ref('')
-/** 首次加载成功前不允许保存：否则会把一张空表单（全是默认值）写回服务端 */
-const loaded = ref(false)
 const form = ref<Record<string, string>>({})
 
 const currencyFields = [
@@ -122,26 +114,18 @@ const mediaSeekNotifyVoters = seekBoolSwitch('media_seek_notify_voters')
 
 async function load() {
   loading.value = true
-  loadError.value = ''
   try {
     form.value = await fetchWelfareConfig()
-    loaded.value = true
-  } catch (e) {
-    // GET 走 silent：拦截器不提示，这里给页面级错误态（带重试）
-    loadError.value = e instanceof Error ? e.message : '加载配置失败'
   } finally {
     loading.value = false
   }
 }
 
 async function save() {
-  if (!loaded.value || saving.value) return
   saving.value = true
   try {
     await saveWelfareConfig(form.value)
     ElMessage.success('已保存')
-  } catch {
-    /* 写操作失败由请求拦截器统一弹错 */
   } finally {
     saving.value = false
   }
@@ -151,39 +135,31 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="admin-page">
+  <div>
     <PageHeader
       eyebrow="公益服"
       title="积分与公益配置"
       description="货币体系、红包规则、兑换比例与公益服到期策略"
     >
       <template #actions>
-        <el-button :icon="RefreshCw" :loading="loading" @click="load">刷新</el-button>
-        <el-button type="primary" :icon="Save" :loading="saving" :disabled="!loaded" @click="save">保存</el-button>
+        <el-button :icon="RefreshCw" @click="load">刷新</el-button>
+        <el-button type="primary" :icon="Save" :loading="saving" @click="save">保存</el-button>
       </template>
     </PageHeader>
 
-    <el-alert type="info" :closable="false">
+    <el-alert type="info" :closable="false" style="margin-bottom: 16px">
       签到积分规则已统一到「系统设置 → 每日签到」（仅公益服用户获得积分）
     </el-alert>
 
-    <SectionCard v-if="loadError && !loaded">
-      <EmptyState :icon="Settings2" title="配置加载失败" :description="loadError">
-        <template #actions>
-          <el-button :loading="loading" @click="load">重试</el-button>
-        </template>
-      </EmptyState>
-    </SectionCard>
-
-    <div v-else v-loading="loading" class="form-grid">
+    <div v-loading="loading" class="form-grid">
       <SectionCard
         title="货币体系"
         :icon="Wallet"
         description="人民币充值兑换积分的比例"
       >
-        <el-form :label-position="labelPosition" label-width="120px" class="config-form">
+        <el-form label-width="120px" class="config-form">
           <el-form-item v-for="f in currencyFields" :key="f.key" :label="f.label">
-            <el-input v-model="form[f.key]" class="field-input" />
+            <el-input v-model="form[f.key]" style="width: 160px" />
             <span class="field-suffix">{{ f.suffix }}</span>
             <span class="field-hint">{{ f.hint }}</span>
           </el-form-item>
@@ -195,13 +171,13 @@ onMounted(load)
         :icon="Gift"
         description="红包手续费与 7 天频率限制"
       >
-        <el-form :label-position="labelPosition" label-width="120px" class="config-form">
+        <el-form label-width="120px" class="config-form">
           <el-form-item label="过期自动退款">
             <el-switch v-model="redpacketRefundEnabled" />
             <span class="field-hint">关闭后过期红包不再自动退款；默认开启</span>
           </el-form-item>
           <el-form-item v-for="f in redpacketFields" :key="f.key" :label="f.label">
-            <el-input v-model="form[f.key]" class="field-input" />
+            <el-input v-model="form[f.key]" style="width: 160px" />
             <span class="field-suffix">{{ f.suffix }}</span>
             <span class="field-hint">{{ f.hint }}</span>
           </el-form-item>
@@ -213,13 +189,13 @@ onMounted(load)
         :icon="ArrowLeftRight"
         description="用户间积分转账的开关、手续费与限额"
       >
-        <el-form :label-position="labelPosition" label-width="120px" class="config-form">
+        <el-form label-width="120px" class="config-form">
           <el-form-item label="功能开关">
             <el-switch v-model="transferEnabled" />
             <span class="field-hint">关闭后用户端隐藏转账入口，后端接口拒绝</span>
           </el-form-item>
           <el-form-item v-for="f in transferFields" :key="f.key" :label="f.label">
-            <el-input v-model="form[f.key]" class="field-input" />
+            <el-input v-model="form[f.key]" style="width: 160px" />
             <span class="field-suffix">{{ f.suffix }}</span>
             <span class="field-hint">{{ f.hint }}</span>
           </el-form-item>
@@ -231,7 +207,7 @@ onMounted(load)
         :icon="Send"
         description="公益服能力（签到/积分/红包/抽奖）是否要求绑定 Telegram"
       >
-        <el-form :label-position="labelPosition" label-width="120px" class="config-form">
+        <el-form label-width="120px" class="config-form">
           <el-form-item label="强制绑定">
             <el-switch v-model="tgBindEnabled" />
             <span class="field-hint">开启后未绑定用户无法使用公益服写操作；老用户有 7 天宽限期；Bot 故障时可关闭降级</span>
@@ -248,7 +224,7 @@ onMounted(load)
         :icon="Bot"
         description="Bot 总开关、群白名单、限流与各功能开关（B4）"
       >
-        <el-form :label-position="labelPosition" label-width="120px" class="config-form">
+        <el-form label-width="120px" class="config-form">
           <el-form-item label="总开关">
             <el-switch v-model="botEnabled" />
             <span class="field-hint">关闭后 Bot 不响应任何消息（轮询继续跑）；默认开启</span>
@@ -262,7 +238,7 @@ onMounted(load)
             <span class="field-hint">关闭后该命令回复"该功能已关闭"</span>
           </el-form-item>
           <el-form-item v-for="f in botFields" :key="f.key" :label="f.label">
-            <el-input v-model="form[f.key]" class="field-input" />
+            <el-input v-model="form[f.key]" style="width: 160px" />
             <span class="field-suffix">{{ f.suffix }}</span>
             <span class="field-hint">{{ f.hint }}</span>
           </el-form-item>
@@ -274,9 +250,9 @@ onMounted(load)
         :icon="Coins"
         description="发言积分上限与积分兑换公益天数"
       >
-        <el-form :label-position="labelPosition" label-width="120px" class="config-form">
+        <el-form label-width="120px" class="config-form">
           <el-form-item v-for="f in earnRedeemFields" :key="f.key" :label="f.label">
-            <el-input v-model="form[f.key]" class="field-input" />
+            <el-input v-model="form[f.key]" style="width: 160px" />
             <span class="field-suffix">{{ f.suffix }}</span>
             <span class="field-hint">{{ f.hint }}</span>
           </el-form-item>
@@ -288,9 +264,9 @@ onMounted(load)
         :icon="Settings2"
         description="到期保留、未活跃禁用、求片额度与抽奖消耗"
       >
-        <el-form :label-position="labelPosition" label-width="120px" class="config-form">
+        <el-form label-width="120px" class="config-form">
           <el-form-item v-for="f in welfareFields" :key="f.key" :label="f.label">
-            <el-input v-model="form[f.key]" class="field-input" />
+            <el-input v-model="form[f.key]" style="width: 160px" />
             <span class="field-suffix">{{ f.suffix }}</span>
             <span class="field-hint">{{ f.hint }}</span>
           </el-form-item>
@@ -302,13 +278,13 @@ onMounted(load)
         :icon="MessageCircle"
         description="Bot 统计群发言赚积分，总开关默认关闭"
       >
-        <el-form :label-position="labelPosition" label-width="120px" class="config-form">
+        <el-form label-width="120px" class="config-form">
           <el-form-item label="总开关">
             <el-switch v-model="chatPointsEnabled" />
             <span class="field-hint">关闭时 bot 不统计任何发言，默认关闭</span>
           </el-form-item>
           <el-form-item v-for="f in chatPointsFields" :key="f.key" :label="f.label">
-            <el-input v-model="form[f.key]" class="field-input" />
+            <el-input v-model="form[f.key]" style="width: 160px" />
             <span class="field-suffix">{{ f.suffix }}</span>
             <span class="field-hint">{{ f.hint }}</span>
           </el-form-item>
@@ -320,7 +296,7 @@ onMounted(load)
         :icon="MessageSquareDashed"
         description="求片总开关、附议与附议者通知，默认全开"
       >
-        <el-form :label-position="labelPosition" label-width="120px" class="config-form">
+        <el-form label-width="120px" class="config-form">
           <el-form-item label="求片总开关">
             <el-switch v-model="mediaSeekEnabled" />
             <span class="field-hint">关闭后用户不能提交求片（只读列表不受影响），默认开启</span>
@@ -343,16 +319,7 @@ onMounted(load)
 .form-grid {
   display: grid;
   gap: 16px;
-  /* min(100%, …)：360px 手机上单列铺满，不会因为 320px 的轨道下限把页面撑出横向滚动 */
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
-}
-.config-form :deep(.el-form-item__content) {
-  flex-wrap: wrap;
-  row-gap: 4px;
-}
-.field-input {
-  width: 160px;
-  max-width: 100%;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
 }
 .config-form :deep(.el-form-item) {
   margin-bottom: 14px;
@@ -365,11 +332,9 @@ onMounted(load)
   color: var(--au-text-2);
   white-space: nowrap;
 }
-/* 说明另起一行：长句子跟在输入框后面会被挤成一列竖排 */
 .field-hint {
-  flex-basis: 100%;
-  color: var(--au-text-3);
+  margin-left: 8px;
+  color: var(--au-text-2);
   font-size: 12px;
-  line-height: 1.5;
 }
 </style>

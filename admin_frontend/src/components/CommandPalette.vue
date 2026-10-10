@@ -215,7 +215,7 @@ function onKeydown(e: KeyboardEvent) {
   align-items: flex-start;
   /* 顶部留白：面板落在顶栏下方，不遮住标题与面包屑 */
   padding: 12vh 16px 16px;
-  background: var(--au-scrim);
+  background: var(--bg-overlay);
   backdrop-filter: blur(3px);
 }
 
@@ -224,10 +224,10 @@ function onKeydown(e: KeyboardEvent) {
   max-height: 70vh;
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-lg);
-  background: var(--au-surface-2);
-  box-shadow: var(--au-shadow-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
   overflow: hidden;
 }
 
@@ -236,10 +236,10 @@ function onKeydown(e: KeyboardEvent) {
   align-items: center;
   gap: 10px;
   padding: 12px 14px;
-  border-bottom: 1px solid var(--au-border);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
-.cmd-head-icon { color: var(--au-text-3); flex-shrink: 0; }
+.cmd-head-icon { color: var(--text-muted); flex-shrink: 0; }
 
 .cmd-input {
   flex: 1;
@@ -247,18 +247,18 @@ function onKeydown(e: KeyboardEvent) {
   border: none;
   outline: none;
   background: transparent;
-  color: var(--au-text);
+  color: var(--text-primary);
   font-size: var(--font-size-lg);
   font-family: inherit;
 }
-.cmd-input::placeholder { color: var(--au-text-3); }
+.cmd-input::placeholder { color: var(--text-muted); }
 
 .cmd-kbd {
   padding: 1px 6px;
-  border: 1px solid var(--au-border);
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-xs);
-  background: var(--au-bg-soft);
-  color: var(--au-text-3);
+  background: var(--bg-inset);
+  color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.6;
@@ -269,7 +269,7 @@ function onKeydown(e: KeyboardEvent) {
 .cmd-group-name {
   padding: 8px 10px 4px;
   font-size: 11.5px;
-  color: var(--au-text-3);
+  color: var(--text-muted);
   letter-spacing: var(--tracking-wide);
 }
 
@@ -280,9 +280,9 @@ function onKeydown(e: KeyboardEvent) {
   width: 100%;
   padding: 9px 10px;
   border: none;
-  border-radius: var(--au-r-md);
+  border-radius: var(--radius-md);
   background: transparent;
-  color: var(--au-text-2);
+  color: var(--text-secondary);
   font: inherit;
   font-size: var(--font-size-sm);
   text-align: left;
@@ -290,49 +290,49 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 .cmd-item.active {
-  background: var(--au-primary-soft);
-  color: var(--au-text);
+  background: var(--primary-bg);
+  color: var(--text-primary);
 }
 
-.cmd-item.danger .cmd-item-label { color: var(--au-danger); }
-.cmd-item.danger.active { background: var(--au-danger-soft); }
+.cmd-item.danger .cmd-item-label { color: var(--danger); }
+.cmd-item.danger.active { background: var(--danger-bg); }
 
-.cmd-item-icon { color: var(--au-text-3); flex-shrink: 0; }
-.cmd-item.active .cmd-item-icon { color: var(--au-primary); }
+.cmd-item-icon { color: var(--text-muted); flex-shrink: 0; }
+.cmd-item.active .cmd-item-icon { color: var(--primary); }
 .cmd-item-label { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmd-item-hint {
   flex: 1;
   min-width: 0;
   text-align: right;
   font-size: 11.5px;
-  color: var(--au-text-3);
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cmd-enter { color: var(--au-primary); flex-shrink: 0; }
+.cmd-enter { color: var(--primary); flex-shrink: 0; }
 
 .cmd-empty {
   padding: 28px 16px;
   text-align: center;
   font-size: var(--font-size-sm);
-  color: var(--au-text-2);
+  color: var(--text-secondary);
 }
 .cmd-empty span {
   display: block;
   margin-top: 6px;
   font-size: var(--font-size-xs);
-  color: var(--au-text-3);
+  color: var(--text-muted);
 }
 
 .cmd-foot {
   display: flex;
   gap: 14px;
   padding: 8px 14px;
-  border-top: 1px solid var(--au-border);
-  background: var(--au-bg-soft);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-inset);
   font-size: 11.5px;
-  color: var(--au-text-3);
+  color: var(--text-muted);
 }
 .cmd-foot kbd { margin-right: 3px; }
 

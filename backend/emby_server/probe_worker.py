@@ -379,45 +379,6 @@ def set_paused(db, paused: bool) -> bool:
 
 
 # ---------------------------------------------------------------- 入队（按需）
-# 本进程启动时刻：之前的版本按需探测从不写轨道行，此前探完（done）却没有内封轨道的
-# 条目在被访问时补探一次；本进程探过的条目轨道已随探测落库，不会反复入队。
-_STREAMS_PERSISTED_SINCE = datetime.now()
-
-
-def _stream_backfill_clause():
-    """SQL 同口径：老版本探过（有编码）但没有内封轨道（抢单时与缺信息条件取或）。"""
-    MI = em.MediaItem
-    MS = em.MediaStream
-    has_streams = (
-        em.MediaStream.__table__.select()
-        .with_only_columns(MS.id)
-        .where(MS.item_id == MI.id, MS.is_external.isnot(True))
-        .exists()
-    )
-    return and_(MI.video_codec.isnot(None), MI.video_codec != "",
-                MI.last_probed_at.isnot(None),
-                MI.last_probed_at < _STREAMS_PERSISTED_SINCE,
-                ~has_streams)
-
-
-def needs_stream_backfill(db, item) -> bool:
-    """探测过（done、有编码）但没有内封轨道、且是老版本探的 → 需要补探一次。"""
-    if getattr(item, "probe_status", None) != "done":
-        return False
-    return _stream_backfill_candidate(db, item)
-
-
-def _stream_backfill_candidate(db, item) -> bool:
-    if getattr(item, "item_type", None) not in PROBE_ITEM_TYPES:
-        return False
-    if not (getattr(item, "file_path", None) or "").strip() or not getattr(item, "video_codec", None):
-        return False
-    probed = getattr(item, "last_probed_at", None)
-    if probed is None or probed >= _STREAMS_PERSISTED_SINCE:
-        return False
-    return not media_probe.has_internal_streams(db, item)
-
-
 def maybe_enqueue(db, item) -> bool:
     """详情页/播放触发点：缺媒体信息的电影/单集入队（或插队）。
 
@@ -431,9 +392,7 @@ def maybe_enqueue(db, item) -> bool:
         if not PROBE_ENABLED:
             return False
         if not needs_probe_item(item):
-            if not needs_stream_backfill(db, item):
-                return False
-            item.probe_attempts = 0  # 补探不继承上一次的失败计数
+            return False
         status = getattr(item, "probe_status", None)
         if status == "probing":
             return False
@@ -486,7 +445,7 @@ def _claim_rows(db, limit: int, library_id: Optional[int] = None,
     MI = em.MediaItem
     now = datetime.now()
     filters = [MI.probe_status == "pending", _due_filter(now), _shape_clause(),
-               or_(_missing_info_clause(), _stream_backfill_clause())]
+               _missing_info_clause()]
     if library_id is not None:
         filters.append(MI.library_id == library_id)
     for p in exclude_prefixes:
@@ -737,7 +696,7 @@ def process_item(item_id: int, key: Optional[str] = None) -> str:
             return "skip"
         key = key or mount_key(item.file_path or "")
         # 抢到之后信息可能已被别的路（NFO/enrich/扫描）补上
-        if not needs_probe_item(item) and not _stream_backfill_candidate(db, item):
+        if not needs_probe_item(item):
             item.probe_status = "done"
             item.probe_attempts = 0
             item.probe_next_retry_at = None
@@ -746,8 +705,7 @@ def process_item(item_id: int, key: Optional[str] = None) -> str:
             return "skip"
         # 先试 JSON 恢复（本地盘，零探测）
         try:
-            if media_probe.persist_lib.deserialize(db, item) \
-                    and media_probe.has_internal_streams(db, item):
+            if media_probe.persist_lib.deserialize(db, item):
                 return "ok"
         except Exception as exc:  # noqa: BLE001
             logger.debug("媒体信息 JSON 恢复异常 item=%s: %s", item_id, exc)

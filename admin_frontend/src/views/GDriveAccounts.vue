@@ -5,23 +5,12 @@
  * 用户实际用的是 Google Drive（100 个 Service Account），不是 115。
  * 本页展示 SA 状态：数量、当前轮换位置、磁盘压力、rclone 缓存大小，
  * 并支持手动触发 SA 轮换。
- *
- * 版式与其它页一致：PageHeader + StatTile + SectionCard，按钮统一 el-button，
- * 颜色只用 --au-* 令牌（以前的 `.btn` / `.icon-btn` 没有全局样式，按钮是裸的）。
  */
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { AlertTriangle, Cloud, HardDrive, RefreshCw, RotateCw, Gauge } from 'lucide-vue-next'
+import { Cloud, RefreshCw, RotateCw, HardDrive } from 'lucide-vue-next'
 import { PageHeader, SectionCard, StatTile, EmptyState } from '@/components/ui'
 import { fetchGDriveSaStatus, rotateGDriveSa } from '@/api/admin'
-
-interface DiskPressure {
-  ok?: boolean
-  free_gb?: number
-  total_gb?: number
-  use_pct?: number
-  warning?: string | null
-}
 
 interface SaStatus {
   sa_count: number
@@ -29,30 +18,23 @@ interface SaStatus {
   sa_truncated: boolean
   current_sa: string | null
   rotation_index: number
-  disk: DiskPressure | Record<string, unknown>
+  disk: Record<string, unknown>
   cache_size_bytes: number
   cache_size_human: string
 }
 
 const loading = ref(false)
 const status = ref<SaStatus | null>(null)
-const loadError = ref('')
+const loadError = ref(false)
 const rotating = ref(false)
-
-/** 后端 check_disk_pressure 的固定字段；老后端没有这个函数时是空对象 */
-const disk = computed<DiskPressure | null>(() => {
-  const d = status.value?.disk as DiskPressure | undefined
-  if (!d || typeof d !== 'object' || !('total_gb' in d)) return null
-  return d
-})
 
 async function load() {
   loading.value = true
-  loadError.value = ''
+  loadError.value = false
   try {
     status.value = await fetchGDriveSaStatus()
-  } catch (e) {
-    loadError.value = e instanceof Error ? e.message : '请求失败'
+  } catch {
+    loadError.value = true
   } finally {
     loading.value = false
   }
@@ -60,11 +42,11 @@ async function load() {
 
 async function rotate() {
   try {
-    await ElMessageBox.confirm(
-      '切换到下一个 Service Account：rclone 会用新账号继续读写，正在播放的流不受影响。确定吗？',
-      '手动轮换',
-      { confirmButtonText: '轮换', cancelButtonText: '取消', type: 'warning' },
-    )
+    await ElMessageBox.confirm('确定要切换到下一个 Service Account 吗？', '手动轮换', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
   } catch {
     return
   }
@@ -73,8 +55,8 @@ async function rotate() {
     const data = await rotateGDriveSa()
     ElMessage.success(`已切换到 ${data.sa_file || '下一个账号'}`)
     await load()
-  } catch {
-    // 拦截器已提示（例如 SA 目录不存在）
+  } catch (err: any) {
+    ElMessage.error(err?.message || '轮换失败')
   } finally {
     rotating.value = false
   }
@@ -84,149 +66,132 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="admin-page">
-    <PageHeader
-      eyebrow="媒体与交付"
-      title="Google Drive 账号"
-      description="rclone 使用的 Service Account 池：当前轮换到哪个账号、缓存与磁盘压力。被限流时可以手动轮换。"
-    >
-      <template #actions>
-        <el-button :loading="loading" :icon="RefreshCw" @click="load">刷新</el-button>
-        <el-button
-          type="primary"
-          :loading="rotating"
-          :disabled="!status || !status.sa_count"
-          :icon="RotateCw"
-          @click="rotate"
-        >手动轮换</el-button>
-      </template>
-    </PageHeader>
+  <div class="gdrive-page">
+    <PageHeader title="Google Drive 账号" description="Service Account 状态与轮换管理" />
 
-    <SectionCard v-if="loadError && !status">
-      <EmptyState compact :icon="AlertTriangle" title="读取 SA 状态失败" :description="loadError">
-        <template #actions><el-button :loading="loading" @click="load">重试</el-button></template>
-      </EmptyState>
-    </SectionCard>
-
-    <div v-else-if="!status" class="gd-skeleton" aria-busy="true" aria-label="加载中">
-      <span class="au-skeleton" /><span class="au-skeleton" /><span class="au-skeleton" />
+    <div v-if="loadError" class="error-state">
+      <EmptyState title="加载失败" description="无法获取 SA 状态" />
+      <button class="btn primary" @click="load">重试</button>
     </div>
 
-    <template v-else>
-      <div class="gd-stats">
-        <StatTile label="SA 账号数" :value="status.sa_count" :icon="Cloud" />
-        <StatTile
-          label="当前账号"
-          :value="status.current_sa || '—'"
-          :hint="status.current_sa ? `轮换位置 #${status.rotation_index}` : '还没有轮换记录'"
-          :title="status.current_sa || ''"
-          :icon="RotateCw"
-          class="gd-current"
-        />
-        <StatTile label="rclone 缓存" :value="status.cache_size_human || '0 B'" :icon="HardDrive" />
-        <StatTile
-          v-if="disk"
-          label="磁盘剩余"
-          :value="`${disk.free_gb ?? 0} GB`"
-          :hint="`共 ${disk.total_gb ?? 0} GB · 已用 ${disk.use_pct ?? 0}%`"
-          :tone="disk.ok === false ? 'warn' : 'plain'"
-          :icon="Gauge"
-        />
+    <template v-else-if="status">
+      <div class="stat-row">
+        <StatTile label="SA 账号数" :value="String(status.sa_count)" :icon="Cloud" />
+        <StatTile label="当前账号" :value="status.current_sa || '—'" :icon="RefreshCw" />
+        <StatTile label="缓存大小" :value="status.cache_size_human" :icon="HardDrive" />
       </div>
 
-      <el-alert v-if="disk?.warning" type="warning" :closable="false" show-icon :title="disk.warning" />
-
-      <SectionCard
-        title="账号列表"
-        :icon="Cloud"
-        :meta="status.sa_truncated ? `前 20 / 共 ${status.sa_count}` : `${status.sa_count} 个`"
-      >
-        <ul v-if="status.sa_files.length" class="gd-list">
+      <SectionCard title="账号列表">
+        <template #actions>
+          <button class="btn primary" :disabled="rotating" @click="rotate">
+            <RotateCw :size="15" :class="{ spinning: rotating }" />
+            {{ rotating ? '轮换中…' : '手动轮换' }}
+          </button>
+          <button class="icon-btn" title="刷新" @click="load">
+            <RefreshCw :size="15" :class="{ spinning: loading }" />
+          </button>
+        </template>
+        <ul class="sa-list">
           <li
             v-for="f in status.sa_files"
             :key="f"
-            class="gd-item"
-            :class="{ 'is-active': f === status.current_sa }"
+            class="sa-item"
+            :class="{ active: f === status.current_sa }"
           >
-            <span class="gd-name mono" :title="f">{{ f }}</span>
-            <span v-if="f === status.current_sa" class="gd-badge">当前</span>
+            <Cloud :size="15" />
+            <span class="sa-name">{{ f }}</span>
+            <span v-if="f === status.current_sa" class="badge ok">当前</span>
           </li>
         </ul>
-        <EmptyState
-          v-else
-          compact
-          :icon="Cloud"
-          title="没有找到 Service Account"
-          description="把 SA 的 JSON 文件放进服务器的 /opt/rclone-sa 目录后刷新。"
-        />
-        <p v-if="status.sa_truncated" class="gd-hint">
-          只列出前 20 个文件名；轮换会在全部 {{ status.sa_count }} 个账号里循环。
+        <p v-if="status.sa_truncated" class="truncated-hint">
+          仅显示前 20 个，共 {{ status.sa_count }} 个
         </p>
       </SectionCard>
+
+      <SectionCard v-if="status.disk && Object.keys(status.disk).length" title="磁盘状态">
+        <pre class="disk-info">{{ JSON.stringify(status.disk, null, 2) }}</pre>
+      </SectionCard>
     </template>
+
+    <div v-else class="loading-state">
+      <RefreshCw :size="24" class="spinning" />
+      <p>加载中…</p>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.gd-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
-}
-/* SA 文件名很长：一行省略，悬停看全 */
-.gd-current :deep(.au-stat__value) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 1rem;
-}
-
-.gd-list {
+.gdrive-page {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 16px;
+  padding: 16px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+.sa-list {
+  list-style: none;
   margin: 0;
   padding: 0;
-  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
-.gd-item {
+.sa-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-width: 0;
-  padding: 8px 12px;
-  border: 1px solid var(--au-border);
-  border-radius: var(--au-r-md);
-  background: var(--au-bg-soft);
+  padding: 10px 14px;
+  border: 1px solid var(--au-border, #2a2a2a);
+  border-radius: 8px;
 }
-.gd-item.is-active {
-  border-color: var(--au-primary-border);
-  background: var(--au-primary-soft);
+.sa-item.active {
+  border-color: var(--au-primary, #e8a84a);
+  background: color-mix(in srgb, var(--au-primary, #e8a84a) 8%, transparent);
 }
-.gd-name {
+.sa-name {
   flex: 1;
-  min-width: 0;
+  font-family: monospace;
   font-size: 13px;
-  color: var(--au-text-2);
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.gd-item.is-active .gd-name { color: var(--au-text); }
-.gd-badge {
-  flex-shrink: 0;
-  padding: 1px 8px;
-  border: 1px solid var(--au-success-border);
-  border-radius: var(--au-r-full);
-  background: var(--au-success-soft);
-  color: var(--au-success);
+.badge.ok {
+  background: #1a7f37;
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 4px;
   font-size: 12px;
 }
-.gd-hint {
-  margin: 12px 0 0;
-  font-size: 12px;
-  color: var(--au-text-3);
+.truncated-hint {
+  color: var(--au-text-2, #888);
+  font-size: 13px;
+  margin-top: 12px;
 }
-.gd-skeleton { display: flex; flex-direction: column; gap: 10px; }
-.gd-skeleton .au-skeleton { display: block; height: 72px; border-radius: var(--au-r-lg); }
+.disk-info {
+  background: var(--au-bg-soft, #1a1a1a);
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  overflow-x: auto;
+}
+.error-state, .loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 40px;
+}
+.spinning {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 </style>

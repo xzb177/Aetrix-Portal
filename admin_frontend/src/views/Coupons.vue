@@ -13,7 +13,7 @@
  * 「功能设置」SectionCard（两行设置，保存在标题行右侧）+ flush 券表（筛选左、查询右）；
  * 加载失败给可重试的错误态。弹窗结构不变，只把写死的颜色 / 圆角换成 --au-* 令牌。
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   AlertTriangle, CircleCheck, Clock3, Plus, RefreshCw, Search, Settings2, TicketPercent, Tickets,
@@ -72,74 +72,39 @@ const usagesColumns: DataColumn[] = [
   { key: 'time', label: '时间', width: 140 },
 ]
 
-/** 请求序号：连续改筛选时只采纳最后一次请求，避免旧响应覆盖新结果 */
-let listSeq = 0
-/** 最近一次实际查询用的关键字：防抖回调据此跳过重复查询 */
-let lastSearch = ''
-
-/** 只拉列表：改筛选 / 搜索时用，不再顺带重拉优惠券设置 */
-async function loadList() {
-  const seq = ++listSeq
-  clearTimeout(searchTimer)
-  lastSearch = filters.value.search
+async function load() {
   loading.value = true
   loadError.value = false
   try {
-    const list = await fetchCoupons({
-      kind: filters.value.kind || undefined,
-      active: filters.value.active || undefined,
-      search: filters.value.search || undefined,
-      limit: 300,
-    })
-    if (seq !== listSeq) return
+    const [list, settings] = await Promise.all([
+      fetchCoupons({
+        kind: filters.value.kind || undefined,
+        active: filters.value.active || undefined,
+        search: filters.value.search || undefined,
+        limit: 300,
+      }),
+      fetchCouponSettings().catch(() => null),
+    ])
     coupons.value = list.coupons
-    // 设置接口读到时以它为准；没读到才用列表附带的开关
-    if (!settingsLoaded) enabled.value = list.enabled
+    enabled.value = list.enabled
+    if (settings) {
+      enabled.value = settings.enabled
+      reserveHours.value = settings.reserve_hours
+      activeUsage.value = settings.active_usage
+    }
   } catch {
-    if (seq !== listSeq) return
     // 错误提示由 HTTP 拦截器统一处理；这里只记下失败，给出重试入口
     loadError.value = true
   } finally {
-    if (seq === listSeq) loading.value = false
+    loading.value = false
   }
 }
-
-let settingsLoaded = false
-async function loadSettings() {
-  try {
-    const settings = await fetchCouponSettings()
-    settingsLoaded = true
-    enabled.value = settings.enabled
-    reserveHours.value = settings.reserve_hours
-    activeUsage.value = settings.active_usage
-  } catch {
-    // 读不到就沿用列表附带的启用状态
-  }
-}
-
-/** 全量刷新（首屏 / 刷新按钮 / 增删改之后）：列表与设置并行 */
-async function load() {
-  await Promise.all([loadList(), loadSettings()])
-}
-
-/** 搜索框输入防抖：停手 350ms 自动查询（回车 / 清空仍立即查询） */
-let searchTimer: ReturnType<typeof setTimeout> | undefined
-watch(
-  () => filters.value.search,
-  (value) => {
-    clearTimeout(searchTimer)
-    searchTimer = setTimeout(() => {
-      if (value !== lastSearch) loadList()
-    }, 350)
-  },
-)
-onBeforeUnmount(() => clearTimeout(searchTimer))
 
 const hasFilter = computed(() => !!(filters.value.kind || filters.value.active || filters.value.search))
 
 function resetFilters() {
   filters.value = { kind: '', active: '', search: '' }
-  loadList()
+  load()
 }
 
 // ==================== 文案 ====================
@@ -494,24 +459,24 @@ onMounted(() => {
             class="f-search"
             placeholder="搜索优惠码"
             clearable
-            @keyup.enter="loadList"
-            @clear="loadList"
+            @keyup.enter="load"
+            @clear="load"
           >
             <template #prefix><Search :size="14" /></template>
           </el-input>
-          <el-select v-model="filters.kind" class="f-select" placeholder="适用范围" clearable @change="loadList">
+          <el-select v-model="filters.kind" class="f-select" placeholder="适用范围" clearable @change="load">
             <el-option label="全部商品" value="all" />
             <el-option label="仅会员" value="subscription" />
             <el-option label="仅充值" value="recharge" />
           </el-select>
-          <el-select v-model="filters.active" class="f-select" placeholder="状态" clearable @change="loadList">
+          <el-select v-model="filters.active" class="f-select" placeholder="状态" clearable @change="load">
             <el-option label="启用" value="true" />
             <el-option label="停用" value="false" />
           </el-select>
         </div>
         <div class="view-toolbar__actions">
           <el-button v-if="hasFilter" text @click="resetFilters">清空筛选</el-button>
-          <el-button type="primary" :icon="Search" @click="loadList">查询</el-button>
+          <el-button type="primary" :icon="Search" @click="load">查询</el-button>
         </div>
       </div>
 
@@ -579,7 +544,7 @@ onMounted(() => {
     </SectionCard>
 
     <!-- 新建 -->
-    <el-dialog v-model="createVisible" title="新建优惠券" width="min(560px, 92vw)">
+    <el-dialog v-model="createVisible" title="新建优惠券" width="560px">
       <el-form label-position="top">
         <div class="form-grid">
           <el-form-item label="适用范围">
@@ -656,7 +621,7 @@ onMounted(() => {
     </el-dialog>
 
     <!-- 生成结果 -->
-    <el-dialog v-model="resultVisible" title="生成结果（请保存）" width="min(420px, 92vw)">
+    <el-dialog v-model="resultVisible" title="生成结果（请保存）" width="420px">
       <el-input :model-value="createResult.join('\n')" type="textarea" :rows="10" readonly class="mono" />
       <template #footer>
         <el-button type="primary" @click="copyCodes">复制全部</el-button>
@@ -664,7 +629,7 @@ onMounted(() => {
     </el-dialog>
 
     <!-- 编辑 -->
-    <el-dialog v-model="editVisible" :title="`编辑优惠券 ${editTarget?.code || ''}`" width="min(560px, 92vw)">
+    <el-dialog v-model="editVisible" :title="`编辑优惠券 ${editTarget?.code || ''}`" width="560px">
       <el-alert
         type="info"
         :closable="false"
@@ -735,7 +700,7 @@ onMounted(() => {
     <el-dialog
       v-model="usagesVisible"
       :title="usagesFilter ? `核销记录 · ${usagesFilter.code}` : '最近的核销记录'"
-      width="min(760px, 92vw)"
+      width="760px"
     >
       <DataTable
         class="usage-table"
@@ -769,7 +734,7 @@ onMounted(() => {
       优惠券管理（弹窗）：这张券到底怎么抵扣、还能不能用、为什么不能用（额度占满 / 已过期 /
       停用）都在这里；四个动作随状态给出（有核销记录的不能删，只能停用）。
     -->
-    <el-dialog v-model="manage.visible" :title="`管理优惠券 ${manage.row?.code || ''}`" width="min(540px, 92vw)">
+    <el-dialog v-model="manage.visible" :title="`管理优惠券 ${manage.row?.code || ''}`" width="540px">
       <div v-if="manage.row" class="mg-body">
         <div class="mg-head">
           <span class="mg-discount">{{ discountText(manage.row) }}</span>

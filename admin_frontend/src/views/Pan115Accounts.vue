@@ -368,7 +368,7 @@ function currentPath(): string {
     </SectionCard>
 
     <!-- 账号编辑 -->
-    <el-dialog v-model="accVisible" :title="accEditing ? '编辑 115 账号' : '添加 115 账号'" width="min(560px, 92vw)">
+    <el-dialog v-model="accVisible" :title="accEditing ? '编辑 115 账号' : '添加 115 账号'" width="560px">
       <el-form label-position="top">
         <el-form-item label="名称">
           <el-input v-model="accForm.name" placeholder="如：主号 / 影库专号" />
@@ -416,7 +416,7 @@ function currentPath(): string {
       账号管理（弹窗）：Cookie 不落明文，但「有没有配 / 上次校验成不成」在这里一次说清；
       校验会真去问 115，结果写回快照，弹窗不关。
     -->
-    <el-dialog v-model="manage.visible" :title="`管理 115 账号「${manage.row?.name || ''}」`" width="min(520px, 92vw)">
+    <el-dialog v-model="manage.visible" :title="`管理 115 账号「${manage.row?.name || ''}」`" width="520px">
       <div v-if="manage.row" class="mg-body">
         <div class="kv-list">
           <div class="kv-row"><span class="kv-key">名称</span><span class="kv-value">{{ manage.row.name }}</span></div>
@@ -474,7 +474,7 @@ function currentPath(): string {
     </el-dialog>
 
     <!-- 目录浏览：用该配置档实测列目录 -->
-    <el-dialog v-model="browseVisible" :title="`115 目录浏览 · ${browseAccount?.name || ''}`" width="min(560px, 92vw)">
+    <el-dialog v-model="browseVisible" :title="`115 目录浏览 · ${browseAccount?.name || ''}`" width="560px">
       <div class="browser">
         <div class="browser-bar">
           <nav class="crumbs" aria-label="当前路径">

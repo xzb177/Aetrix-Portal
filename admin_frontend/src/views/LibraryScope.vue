@@ -493,7 +493,7 @@ async function removeOverride(row: { username: string; user_id: number }) {
     <el-dialog
       v-model="dialogVisible"
       :title="editingUserId ? '编辑可见范围覆盖' : '新增可见范围覆盖'"
-      width="min(520px, 92vw)"
+      width="520px"
       class="ls-dialog"
     >
       <el-form label-position="top">

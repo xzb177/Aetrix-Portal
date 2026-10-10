@@ -761,8 +761,6 @@ def _auto_migrate():
         # 缺了详情页只剩编码与码率几行（对比其它 Emby 服务端就很空）。
         ("emby_items", [
             ("drive_file_id", "VARCHAR(64)", "NULL"),
-            # 元数据片长（TMDB/豆瓣），探测前的 RunTimeTicks 回退；老库补列后为 0 = 未知
-            ("metadata_runtime_ticks", "BIGINT", "0"),
             # StrmAssistant #4 多版本合并：被合并条目的 merged_into_id 指向主记录
             ("merged_into_id", "INTEGER", "NULL"),
         ]),

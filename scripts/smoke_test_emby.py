@@ -146,9 +146,7 @@ r = client.get(f"/emby/Users/{user_id}/Items/{movie['Id']}", headers=H)
 assert r.status_code == 200, r.text
 detail = r.json()
 assert detail["MediaSources"], "详情应包含 MediaSources"
-# EMBY_HIDE_MEDIA_PATH 默认开启：客户端响应不再下发服务器路径
-ms0 = detail["MediaSources"][0]
-print("OK Item detail, path hidden:", "Path" not in ms0)
+print("OK Item detail, path:", detail["MediaSources"][0]["Path"])
 
 # 播放信息
 r = client.post(f"/emby/Items/{movie['Id']}/PlaybackInfo", headers=H, json={"MaxStreamingBitrate": 8000000})

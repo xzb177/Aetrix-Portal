@@ -71,7 +71,7 @@ const title = computed(() => `浏览：${props.mount?.name || ''}`)
   <el-dialog
     :model-value="modelValue"
     :title="title"
-    width="min(560px, 92vw)"
+    width="min(560px, 94vw)"
     @update:model-value="(v: boolean) => emit('update:modelValue', v)"
   >
     <div class="browse-bar">

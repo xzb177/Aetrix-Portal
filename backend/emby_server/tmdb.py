@@ -830,53 +830,6 @@ def _has_credits(data) -> bool:
     return isinstance(data, dict) and isinstance(data.get("credits"), dict)
 
 
-_CJK_ORIGINAL_LANGS = {"zh", "cn"}
-_HAN_RE = re.compile("[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
-_ROMANIZED_RE = re.compile(r"^[A-Za-z][A-Za-z'\-]*(?: [A-Za-z][A-Za-z'\-]*){0,3}$")
-
-
-def is_romanized_role(name: str, role: str) -> bool:
-    """演员名是汉字、角色名却是纯拉丁字母的短串（多为拼音）→ True。
-
-    只在调用方已确认是华语作品时使用：英文片里中国演员演英文角色是正常的。
-    """
-    if not role or not name:
-        return False
-    return bool(_HAN_RE.search(name)) and not _HAN_RE.search(role) \
-        and bool(_ROMANIZED_RE.match(role.strip()))
-
-
-def runtime_ticks_from(details: Optional[dict]) -> int:
-    """TMDB 载荷里的片长（分钟）→ 100ns ticks。
-
-    电影/单集是 ``runtime``；剧集是 ``episode_run_time``（列表，取第一个正数）。
-    没有返回 0。
-    """
-    if not isinstance(details, dict):
-        return 0
-    cands = [details.get("runtime")]
-    ert = details.get("episode_run_time")
-    if isinstance(ert, list):
-        cands.extend(ert)
-    for v in cands:
-        try:
-            minutes = int(v or 0)
-        except (TypeError, ValueError):
-            continue
-        if 0 < minutes < 24 * 60:
-            return minutes * 60 * 10_000_000
-    return 0
-
-
-def apply_runtime(item, details: Optional[dict]) -> bool:
-    """元数据片长只补空（真实时长来自探测，存在 duration_ticks，两者互不覆盖）。"""
-    ticks = runtime_ticks_from(details)
-    if ticks and not (getattr(item, "metadata_runtime_ticks", 0) or 0):
-        item.metadata_runtime_ticks = ticks
-        return True
-    return False
-
-
 def cast_list(details: Optional[dict], limit: int = TMDB_CAST_LIMIT) -> list[dict]:
     """从 details 载荷（``append_to_response=credits``）里取前 N 个演员。
 
@@ -892,7 +845,6 @@ def cast_list(details: Optional[dict], limit: int = TMDB_CAST_LIMIT) -> list[dic
         return []
     cast = (details.get("credits") or {}).get("cast") or []
     base = image_base()
-    cjk_title = str(details.get("original_language") or "").lower() in _CJK_ORIGINAL_LANGS
     out: list[dict] = []
     for c in cast[: max(0, int(limit))]:
         if not isinstance(c, dict):
@@ -901,15 +853,9 @@ def cast_list(details: Optional[dict], limit: int = TMDB_CAST_LIMIT) -> list[dic
         if not name:
             continue
         profile = c.get("profile_path")
-        role = str(c.get("character") or "").strip()
-        if cjk_title and is_romanized_role(name, role):
-            # 华语片的角色名在 TMDB 上常被录成拼音（「沦陷」：嘉羿 → "Zhan Wang"=展望），
-            # 客户端在演员名下面显示一串拼音像是把英文名当成了角色。不知道中文角色名
-            # 时宁可留空；豆瓣有中文角色名时由 refresh_person_worker 补上。
-            role = ""
         out.append({
             "name": name,
-            "role": role,
+            "role": str(c.get("character") or "").strip(),
             "image": f"{base}/w185{profile}" if profile else "",
             "sort_order": len(out),
             # StrmAssistant #9 对标：存 person tmdb_id，供后续刷新演员详情用
@@ -1779,9 +1725,6 @@ class TmdbClient:
         if tmdb_overview and not (getattr(episode_item, "overview", "") or "").strip():
             episode_item.overview = tmdb_overview
             result["updated"] = True
-        # 单集片长（元数据口径，探测拿到真实时长前用）
-        if apply_runtime(episode_item, episode_data):
-            result["updated"] = True
         # 剧照路径（调用方拼 URL + 预热）
         still = episode_data.get("still_path")
         if still:
@@ -1823,8 +1766,6 @@ class TmdbClient:
         # 用 getattr 兜底：调用方（含测试里的轻量替身）未必带这个字段。
         if not getattr(item, "metadata_source", None):
             item.metadata_source = "tmdb"
-        # 片长（元数据口径）：探测前客户端「媒体信息」不至于显示 0 秒
-        apply_runtime(item, data)
         # 类型：详情接口直接给 genres=[{id, name}]（language=zh-CN 下 name 已是中文）。
         # 这是「有 tmdb_id 却无类型」的主因：以前 apply_details 完全忽略它，
         # 凡走 tmdb_id → 详情分支的（NFO 自带 tmdb_id、别名匹配、已有 id 补缺）
