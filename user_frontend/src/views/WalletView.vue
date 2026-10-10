@@ -16,7 +16,7 @@ import { useUserStore } from '@/stores/user'
 import {
   Wallet, TicketCheck, Receipt, RefreshCw, Sparkles, Flame,
   ArrowUpRight, ArrowDownLeft, CircleCheck, Clock, CircleAlert, ChevronRight,
-  Undo2, Percent, Zap,
+  Undo2, Percent, Zap, Coins, Crown,
 } from 'lucide-vue-next'
 import {
   pointsApi, checkinApi, exchangeApi, paymentApi, membershipApi, vitalityApi,
@@ -393,7 +393,7 @@ onBeforeUnmount(stopPayPoll)
   <div class="au-page wallet-view">
     <div class="wallet-ambiance" aria-hidden="true"></div>
 
-    <!-- 余额主卡：左右分区 — 左侧余额与签到态，右侧核销面板 -->
+    <!-- 余额主卡：大数字 + 签到态 + 活力值（核销已独立成区） -->
     <section class="balance-hero au-anim-up">
       <div class="bh-main">
         <span class="balance-label">
@@ -433,8 +433,27 @@ onBeforeUnmount(stopPayPoll)
         </div>
 
       </div>
-      <div class="bh-divider"></div>
+    </section>
 
+    <!-- 快捷操作 -->
+    <nav class="wallet-actions au-anim-up" aria-label="快捷操作">
+      <RouterLink to="/store?tab=recharge" class="wa-item">
+        <Coins :size="18" />
+        <span>充值</span>
+      </RouterLink>
+      <RouterLink to="/store?tab=plans" class="wa-item">
+        <Crown :size="18" />
+        <span>买会员</span>
+      </RouterLink>
+      <a v-if="transferConfig?.enabled" href="#wallet-transfer" class="wa-item">
+        <ArrowUpRight :size="18" />
+        <span>转账</span>
+      </a>
+    </nav>
+
+    <!-- 核销中心（原余额卡右侧，现独立成区） -->
+    <section class="redeem-card au-card au-anim-up" aria-label="核销中心">
+      <span class="sec-label">核销中心</span>
       <form class="bh-redeem" @submit.prevent="handleRedeem">
   <label class="redeem-label">
     <TicketCheck :size="14" /> 卡码 · 兑换码
@@ -482,7 +501,7 @@ onBeforeUnmount(stopPayPoll)
     </section>
 
     <!-- 积分转账（C2）：开关关闭时隐藏 -->
-    <section v-if="transferConfig?.enabled" class="au-card transfer-card au-anim-up">
+    <section v-if="transferConfig?.enabled" id="wallet-transfer" class="au-card transfer-card au-anim-up">
       <div class="transfer-head">
         <ArrowUpRight :size="15" />
         <strong>积分转账</strong>
@@ -626,15 +645,83 @@ onBeforeUnmount(stopPayPoll)
   z-index: 1;
 }
 
+/* 通用区块微标签（与商店页统一的 Section 结构语言） */
+.wallet-view .sec-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--au-text-3);
+  margin: 0 0 10px;
+}
+
+/* 快捷操作：余额 Hero 下的第一行动层（金融 App 式） */
+.wallet-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.wa-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 8px;
+  background: var(--au-surface);
+  border: 1px solid var(--au-border);
+  border-radius: var(--au-r-lg);
+  color: var(--au-text);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    transform 0.12s cubic-bezier(0.34, 1.56, 0.64, 1),
+    border-color var(--au-fast) var(--au-ease);
+}
+
+.wa-item svg {
+  width: 18px;
+  height: 18px;
+  color: var(--au-text-2);
+  flex-shrink: 0;
+}
+
+.wa-item:hover {
+  border-color: var(--au-border-strong);
+}
+
+.wa-item:active {
+  transform: scale(0.97);
+}
+
+/* 核销中心：原余额卡右侧，现独立成区 */
+.redeem-card {
+  padding: 20px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.redeem-card .bh-redeem {
+  width: 100%;
+}
+
+#wallet-transfer {
+  scroll-margin-top: 76px;
+}
+
 html[data-theme='light'] .wallet-ambiance {
   display: none;
 }
 
 .balance-hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
-  align-items: stretch;
-  gap: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
   padding: 1.75rem 1.75rem;
   border-radius: var(--au-r-xl);
   background: var(--au-surface);
@@ -652,10 +739,6 @@ html[data-theme='light'] .wallet-ambiance {
   right: 10%;
   height: 1px;
   background: linear-gradient(90deg, transparent, var(--au-primary-border), transparent);
-}
-
-.bh-divider {
-  background: var(--au-border-strong);
 }
 
 .bh-main {
@@ -1316,15 +1399,8 @@ button.qty-btn:active {
 
 @media (max-width: 720px) {
   .balance-hero {
-    grid-template-columns: 1fr;
     gap: 1.25rem;
     padding: 1.375rem 1.25rem;
-  }
-
-  .bh-divider {
-    height: 1px;
-    width: 100%;
-    margin: 0;
   }
 
   .refresh {
