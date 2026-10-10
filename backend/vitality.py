@@ -3,7 +3,7 @@ import logging
 import threading
 from datetime import date, datetime
 from fastapi import HTTPException
-from sqlalchemy import func, case, text
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 from backend import models
 from backend.integrations import store
@@ -147,6 +147,22 @@ def ensure_can_play(db: Session, user) -> None:
     raise HTTPException(status_code=403, detail=f"活力值不足（{v}/{cfg['limit_threshold']}），签到或用积分续活力后可继续观影")
 
 
+def _lock_user_row(db: Session, user_id: int) -> None:
+    """对用户行加写锁，持有到本事务提交/回滚（「查用量-判上限-写」三步的串行化原语）。
+
+    与 backend/api/economy.py::lock_user_row 同语义；本模块独立一份以避免循环导入
+    （economy.py 引用了本模块）。
+    - PostgreSQL：SELECT ... FOR UPDATE（READ COMMITTED 下锁后的新语句看得到已提交数据）；
+    - SQLite：无行锁，用无副作用 UPDATE 取得写锁（同样持有到提交）。
+    必须在统计用量之前调用：并发第二个请求在锁上等前者提交后，重新统计就能看到
+    前者已写入的记录，上限不会被绕过。
+    """
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT id FROM web_users WHERE id = :id FOR UPDATE"), {"id": user_id})
+    else:
+        db.execute(text("UPDATE web_users SET id = id WHERE id = :id"), {"id": user_id})
+
+
 def _add_vitality(db: Session, user_id: int, delta: int, reason: str) -> int:
     """原子增减活力值：单条 UPDATE 完成加减 + 钳制到 [0, max]，返回钳制后的值。
 
@@ -209,6 +225,10 @@ def award_watch_reward(db: Session, user_id: int) -> int:
 
     返回实际发放的点数（0 表示未发放：功能关闭 / 已达上限 / 非公益服用户）。
     幂等性由调用方保证（每次有效观影调用一次）。
+
+    并发安全：先对用户行加锁，再「查今日已得 → 判上限 → 发放」，三步在同一事务内
+    串行化。第二个并发请求在锁上等待前者提交后，能看到前者已发放的记录，
+    不会超发（修复 TOCTOU）。
     """
     cfg = get_vitality_config(db)
     if not cfg["enabled"]:
@@ -216,18 +236,22 @@ def award_watch_reward(db: Session, user_id: int) -> int:
     reward = int(cfg.get("watch_reward", 0) or 0)
     if reward <= 0:
         return 0
-    # 非公益服用户不参与活力值体系
-    user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
-    if not user or not getattr(user, "is_welfare", False):
-        return 0
     limit = int(cfg.get("daily_gain_limit", 0) or 0)
-    if limit > 0:
-        gained = get_today_free_gain(db, user_id)
-        remaining = limit - gained
-        if remaining <= 0:
-            return 0
-        reward = min(reward, remaining)
     try:
+        # 先锁行：把"查今日免费获取"和"发放"包进同一事务，避免并发超发
+        _lock_user_row(db, user_id)
+        # 非公益服用户不参与活力值体系
+        user = db.query(models.WebUser).filter(models.WebUser.id == user_id).first()
+        if not user or not getattr(user, "is_welfare", False):
+            db.rollback()
+            return 0
+        if limit > 0:
+            gained = get_today_free_gain(db, user_id)
+            remaining = limit - gained
+            if remaining <= 0:
+                db.rollback()
+                return 0
+            reward = min(reward, remaining)
         _add_vitality(db, user_id, reward, "watch_reward")
         db.commit()
     except Exception:
@@ -241,22 +265,33 @@ def clamp_on_archive(db: Session, user_id: int) -> int:
     """归档/退群时把活力值钳制到 vitality_archive_clamp（只降不升）。
 
     返回钳制后的活力值。
+
+    并发安全：先对用户行加锁，读-改-写在同一事务内完成。第二个并发调用在锁上
+    等待前者提交后，读到的是已钳制的值（current <= clamp）直接返回，不会把值
+    错误归零（修复读-改-写竞态）；且天然幂等。
     """
     cfg = get_vitality_config(db)
     clamp = int(cfg.get("archive_clamp", 0) or 0)
-    row = db.query(models.WebUser.vitality).filter(models.WebUser.id == user_id).first()
-    current = int(row[0]) if row and row[0] is not None else 0
-    if current <= clamp:
-        return current
-    delta = clamp - current  # 负数
+    current = None
     try:
+        # 先锁行：读 current → 算 delta → _add_vitality 写回，三步原子
+        _lock_user_row(db, user_id)
+        row = db.query(models.WebUser.vitality).filter(models.WebUser.id == user_id).first()
+        if not row:
+            db.rollback()
+            return 0
+        current = int(row[0]) if row[0] is not None else 0
+        if current <= clamp:
+            db.rollback()
+            return current
+        delta = clamp - current  # 负数；clamp 已校验 <= max，落在 [0, max] 内
         final = _add_vitality(db, user_id, delta, "archive_clamp")
         db.commit()
+        return final
     except Exception:
         db.rollback()
         logger.exception("clamp_on_archive failed for user %s", user_id)
-        return current
-    return final
+        return current if current is not None else 0
 
 
 _DEDUCT_BATCH = 500
