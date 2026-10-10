@@ -32,8 +32,11 @@ function fmtSize(bytes: number): string {
 const panelOk = computed(() => health.value?.status === 'healthy' || health.value?.status === 'degraded')
 const panelDetail = computed(() => {
   if (health.value?.status === 'healthy') return 'API 正常响应'
-  if (health.value?.status === 'degraded') {
+  if (health.value?.status === 'degraded' || health.value?.status === 'unhealthy') {
     const issues = health.value?.health_issues?.map((i) => i.message).join('；')
+    if (health.value?.status === 'unhealthy') {
+      return issues ? `异常：${issues}` : '异常：原因未知，请查看后端日志'
+    }
     return issues ? `有警告：${issues}` : '有警告，API 正常响应'
   }
   return '无法确认状态'

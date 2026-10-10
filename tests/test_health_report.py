@@ -135,3 +135,52 @@ def test_collect_never_raises_on_broken_db():
     res = health_report.collect(_Broken())
     assert res["level"] in ("warn", "down"), res
     assert res["issues"], res
+
+
+
+def _big_backlog(monkeypatch):
+    """1000 条积压的通用 monkeypatch"""
+    counts = {"done": 100, "failed": 0, "pending": 900, "enriching": 100}
+    monkeypatch.setattr(health_report, "_count", lambda db, t, s: 20 if s == "done" else 0)
+    monkeypatch.setattr(health_report, "_enrich_count", lambda db, s: counts.get(s, 0))
+    monkeypatch.setattr(health_report, "library_scan_summary", lambda db: {"failed": 0})
+    monkeypatch.setattr("backend.emby_server.maintenance.resource_report",
+                        lambda: {"disk_free_percent": 80.0, "transcode_sessions": 0})
+
+
+def test_no_false_down_when_counter_empty(db, monkeypatch):
+    """计数器为空（刚启动/分离部署 API 进程）时只报 warn，不误报 down。
+
+    回归：旧实现 backlog>=500 且计数器为 0 时直接报 down，而分离部署下
+    API 进程的计数器恒为 0，导致恒误报。现在 total==0 只报 warn（诚实）。
+    """
+    from backend.emby_server import scan_progress as progress
+    _big_backlog(monkeypatch)
+    progress.reset()
+    try:
+        res = health_report.collect(db)
+    finally:
+        progress.reset()
+    # 积压本身是 down，但「停滞」不能是 down
+    assert not any(i["key"] == "enrich_stalled" for i in res["issues"]), res
+    assert any(i["key"] == "enrich_no_progress" and i["level"] == "warn"
+               for i in res["issues"]), res
+
+
+def test_stalled_down_when_had_activity_but_stalled(db, monkeypatch):
+    """有过动作（total>0）但窗口内无成功 = 真卡住，报 down enrich_stalled"""
+    import time
+    from backend.emby_server import scan_progress as progress
+    _big_backlog(monkeypatch)
+    progress.reset()
+    try:
+        # 注入 10 分钟前的完成记录：total>0 但 done_per_min==0
+        old = time.monotonic() - 700
+        with progress._LOCK:
+            progress._COMPLETIONS.append((old, "done"))
+            progress._COMPLETED_TOTAL["done"] += 1
+        res = health_report.collect(db)
+    finally:
+        progress.reset()
+    assert res["level"] == "down", res
+    assert any(i["key"] == "enrich_stalled" for i in res["issues"]), res
