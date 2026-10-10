@@ -1499,6 +1499,63 @@ class TmdbClient:
             self._cache_put(key, data)
             return data
 
+    def batch_search(self, queries):
+        """批量搜索。
+
+        使用 8 个线程并发调用 self.search(name, year, kind)，
+        单个任务异常时返回 None，最终返回 {index: hit_or_None}，包含所有下标。
+
+        TMDB 没有原生批量接口，这里是"并发 + 共用令牌桶限速"的批量：
+        限速仍走 self._limiter（线程安全），不会突破 4/秒；缓存走
+        search() 内部的两级缓存（L1 内存 + L2 磁盘），命中不发请求。
+
+        :param queries: [(name, year, kind), ...] 搜索参数列表
+        :return: dict，键为输入下标，值为搜索命中 dict 或 None
+        """
+        import concurrent.futures
+
+        results = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            future_to_index = {
+                executor.submit(self.search, name, year, kind): index
+                for index, (name, year, kind) in enumerate(queries)
+            }
+            for future in concurrent.futures.as_completed(future_to_index):
+                index = future_to_index[future]
+                try:
+                    results[index] = future.result()
+                except Exception:
+                    results[index] = None
+        return results
+
+    def batch_details(self, ids):
+        """批量取详情。
+
+        使用 8 个线程并发调用 self.details(tid, kind)，
+        单个任务异常时返回 None（异常隔离），最终返回
+        {index: details_or_None}，包含所有下标。
+
+        限速与缓存口径同 batch_search（共用令牌桶 + 两级缓存）。
+
+        :param ids: [(tmdb_id, kind), ...] 详情参数列表
+        :return: dict，键为输入下标，值为详情 dict 或 None
+        """
+        import concurrent.futures
+
+        results = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            future_to_index = {
+                executor.submit(self.details, tid, kind): index
+                for index, (tid, kind) in enumerate(ids)
+            }
+            for future in concurrent.futures.as_completed(future_to_index):
+                index = future_to_index[future]
+                try:
+                    results[index] = future.result()
+                except Exception:
+                    results[index] = None
+        return results
+
     def credits(self, tmdb_id: str, kind: str) -> list[dict]:
         """前 10 演员（``cast_list`` 口径：name / role / image / sort_order）。
 
