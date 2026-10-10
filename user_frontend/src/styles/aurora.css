@@ -6,7 +6,11 @@
 
 :root {
   /* 布局 — 内容区 gutter（与 .container 内边距对齐，横滑 bleed 用） */
-  --gutter: 1.25rem;
+  /* 8pt 网格：20px → 24px */
+  --gutter: 1.5rem;
+  /* 数字等宽：统计数字纵向对齐，"用户说不出来但感觉贵" */
+  --au-nums: tabular-nums;
+  /* 字重铁律：一屏不超过 2 种字重（400 正文 / 500 标题 / 600 强调三选二） */
 
   /* 字体（暗房影院）：标题走衬线（片名 / 页标题 / 大数字说明），正文保持系统无衬线 */
   --au-font-serif: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'STSong', serif;
@@ -661,4 +665,17 @@ html {
 /* 去掉 300ms 点击延迟，按压反馈即时 */
 a, button, .dock-item, .poster-card {
   touch-action: manipulation;
+}
+
+/* ==================== 精致化：排版（2026-10-10） ==================== */
+/* 深色下衬线标题字重 500（比浅色粗半档，防发虚） */
+h1, h2, .title, .page-title {
+  font-family: var(--au-font-serif);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+/* 数字等宽对齐 */
+.stat-value, .meta-item, .count, [data-nums] {
+  font-variant-numeric: var(--au-nums);
 }
