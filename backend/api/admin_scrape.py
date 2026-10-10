@@ -1509,17 +1509,22 @@ def get_douban_config(
     }
 
 
+class _DoubanConfigBody(BaseModel):
+    enabled: bool = True
+    min_interval: float = 1.0
+
+
 @admin_emby_router.put("/scrape/douban-config")
 def save_douban_config(
-    enabled: bool = True,
-    min_interval: float = 1.0,
+    body: _DoubanConfigBody,
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
     """保存豆瓣优先配置（保存即热生效）"""
     from backend.emby_server import douban as _dbn
     from backend.integrations import store
-    iv = max(0.0, float(min_interval or 0))
+    enabled = body.enabled
+    iv = max(0.0, float(body.min_interval or 0))
     store.write_values(
         db,
         {

@@ -1142,7 +1142,7 @@ export interface DoubanConfig {
 }
 export const fetchDoubanConfig = () => get<DoubanConfig>(`${E}/scrape/douban-config`)
 export const saveDoubanConfig = (enabled: boolean, min_interval: number) =>
-  put<DoubanConfig>(`${E}/scrape/douban-config?enabled=${enabled}&min_interval=${min_interval}`)
+  put<DoubanConfig>(`${E}/scrape/douban-config`, { enabled, min_interval })
 
 /** 保存总开关 / 中文优先 / 顺序 / 逐源开关 / 逐源限速（**不动密钥池**） */
 export const saveMetaSources = (data: {
