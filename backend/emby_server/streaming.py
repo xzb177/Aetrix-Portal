@@ -736,7 +736,14 @@ def start_transcode(
     # 失效会话回收与并发上限保护放到后台线程：它们要 terminate 子进程、等它退出、
     # 删目录（最坏几秒），而本函数是在请求路径（事件循环）上被调用的，不该让本次播放
     # 为别人遗留的会话等待（见 _reap_in_background）。
-    threading.Thread(target=_reap_in_background, daemon=True).start()
+    # P2 修复（审查）：此前每次调用都起一个新线程，突发播放时数百个短命线程
+    # 同时跑同一份回收。现节流：距上次触发 <10 秒直接跳过（常驻 reaper 30s 一轮兜底）。
+    global _last_bg_reap
+    _now = time.monotonic()
+    with _last_bg_reap_lock:
+        if _now - _last_bg_reap >= 10.0:
+            _last_bg_reap = _now
+            threading.Thread(target=_reap_in_background, daemon=True).start()
     if user_id is not None and item_guid:
         existing = find_active_transcode(user_id, item_guid, tier)
         if existing:
@@ -1065,6 +1072,9 @@ def reap_idle_transcodes(idle_limit: Optional[float] = None) -> int:
 _REAPER_INTERVAL = 30.0
 _reaper_started = False
 _reaper_lock = threading.Lock()
+# P2 修复：start_transcode 触发的后台回收节流时间戳（进程内）
+_last_bg_reap = 0.0
+_last_bg_reap_lock = threading.Lock()
 
 
 def transcode_reaper_tick() -> dict:
