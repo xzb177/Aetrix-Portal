@@ -1264,8 +1264,25 @@ class MovieRequest(Base):
     pushed_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    # v2 求片附议数：用户可对 pending 的求片附议（+1），管理端按热度排序
+    vote_count = Column(Integer, default=0, nullable=False)
 
     user = relationship("WebUser")
+
+
+class MovieRequestVote(Base):
+    """求片附议表（v2）：一个用户对一条求片只能附议一次"""
+    __tablename__ = 'movie_request_votes'
+
+    __table_args__ = (
+        UniqueConstraint('request_id', 'user_id', name='uq_vote_request_user'),
+        Index('idx_vote_request', 'request_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    request_id = Column(Integer, ForeignKey('movie_requests.id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
 
 
 # ==================== 系统监控 ====================

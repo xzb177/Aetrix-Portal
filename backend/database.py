@@ -690,6 +690,8 @@ def _auto_migrate():
             ("push_status", "VARCHAR(20)", "NULL"),
             ("push_message", "VARCHAR(300)", "NULL"),
             ("pushed_at", "DATETIME", "NULL"),
+            # v2 求片附议数（新表 movie_request_votes 由 create_all 建）
+            ("vote_count", "INTEGER", "0"),
         ]),
         # v2.10.0 优惠券：订单上快照「原价 / 优惠金额 / 核销记录」。
         # 退款与对账要能解释「当时到底按多少钱算的」——套餐改价之后不能按现价重算。

@@ -761,6 +761,10 @@ async def create_media_seek(
     if len(name) > 255:
         raise HTTPException(status_code=400, detail="片名过长")
 
+    # v2 求片总开关：关闭后用户不能提交求片
+    if not media_seek.seek_enabled(db):
+        raise HTTPException(status_code=403, detail="求片功能已关闭")
+
     # 去重 / 额度 / 落库整段下放线程池：同步 SQLAlchemy 跑在事件循环上时，
     # 卡住的是**所有人**的请求（求片页是用户会连着点的地方）。
     request_id = await run_in_threadpool(
@@ -811,6 +815,60 @@ def withdraw_media_seek(
     return {"success": True, "message": "已撤回"}
 
 
+@user_router.get("/media-seek/hot")
+def hot_media_seeks(
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """v2 热门求片：所有人 pending 的求片（匿名展示用户名），按附议数排序
+
+    附议开关关闭时返回空列表（前端隐藏该区块）。
+    """
+    if not media_seek.vote_enabled(db):
+        return {"requests": []}
+    rows = (
+        db.query(models.MovieRequest)
+        .filter(models.MovieRequest.status == "pending")
+        .order_by(models.MovieRequest.vote_count.desc(),
+                  models.MovieRequest.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    voted = media_seek.voted_ids(db, current_user.id, [r.id for r in rows])
+    return {
+        "requests": [
+            {
+                "id": r.id,
+                "movie_name": r.movie_name,
+                "year": r.year,
+                "type": r.type,
+                "season_label": media_seek.season_label(r.season),
+                "vote_count": r.vote_count or 0,
+                "voted": r.id in voted,
+                "mine": r.user_id == current_user.id,
+                "created_at": r.created_at.isoformat(),
+            }
+            for r in rows
+        ]
+    }
+
+
+@user_router.post("/media-seek/{request_id}/vote")
+def vote_media_seek(
+    request_id: int,
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """v2 附议 / 取消附议一条求片（每人每条只能附议一次，不能给自己附议）"""
+    try:
+        result = media_seek.toggle_vote(db, current_user, request_id)
+    except ValueError as e:
+        msg = str(e)
+        code = 403 if "已关闭" in msg else 400
+        raise HTTPException(status_code=code, detail=msg)
+    return {"success": True, **result}
+
+
 @user_router.get("/media-seek")
 def get_my_media_seeks(
     status_filter: Optional[str] = None,
@@ -831,6 +889,8 @@ def get_my_media_seeks(
 
     requests = query.order_by(models.MovieRequest.created_at.desc()).limit(200).all()
     realm_names = {r.id: r.name for r in realms.list_realms(db)}
+    # v2：一次查询拿出当前用户附议过的求片 id（列表打标用）
+    voted = media_seek.voted_ids(db, current_user.id, [r.id for r in requests])
 
     return {
         "requests": [
@@ -842,6 +902,9 @@ def get_my_media_seeks(
                 "note": r.note,
                 "status": r.status,
                 "admin_note": r.admin_note,
+                # v2 附议数 + 我是否已附议
+                "vote_count": r.vote_count or 0,
+                "voted": r.id in voted,
                 # 剧集按整季申请：界面文案由 season_label 统一（全季 / 第 1、2 季）
                 "season": r.season,
                 "season_label": media_seek.season_label(r.season),

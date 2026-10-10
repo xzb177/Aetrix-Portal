@@ -19,12 +19,12 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import {
   Film, Plus, Send, RefreshCw, CheckCircle2, Clock, XCircle, Ban, Search,
-  CircleCheck, Loader2, Play, Ticket, Undo2, Info, Layers, Tv, Star, X,
+  CircleCheck, Loader2, Play, Ticket, Undo2, Info, Layers, Tv, Star, X, ThumbsUp,
 } from 'lucide-vue-next'
 import {
   mediaSeekApi, subscriptionApi,
   type MediaSeekRequest, type MediaSeekQuota, type MediaLookupItem, type MySubscription,
-  type MediaSeekCandidate, type TvSeason,
+  type MediaSeekCandidate, type TvSeason, type HotMediaSeekRequest,
 } from '@/api'
 import { useToast } from '@/composables/useToast'
 
@@ -348,8 +348,41 @@ function fmtDate(iso: string) {
   }
 }
 
+// ===== v2 热门求片（附议） =====
+/** 所有人 pending 的求片（匿名），按附议数排序；开关关闭时后端返回空列表 */
+const hotList = ref<HotMediaSeekRequest[]>([])
+const hotLoading = ref(false)
+const voting = ref<number | null>(null)
+
+async function loadHot() {
+  hotLoading.value = true
+  try {
+    const res = await mediaSeekApi.hot()
+    hotList.value = res.requests || []
+  } catch {
+    hotList.value = []
+  } finally {
+    hotLoading.value = false
+  }
+}
+
+/** 附议 / 取消附议（自己的求片不显示按钮，后端也会拦） */
+async function voteHot(item: HotMediaSeekRequest) {
+  if (voting.value !== null || item.mine) return
+  voting.value = item.id
+  try {
+    const res = await mediaSeekApi.vote(item.id)
+    item.voted = res.voted
+    item.vote_count = res.vote_count
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '附议失败')
+  } finally {
+    voting.value = null
+  }
+}
+
 onMounted(async () => {
-  await Promise.all([loadRequests(), loadMyRealms()])
+  await Promise.all([loadRequests(), loadMyRealms(), loadHot()])
   // 从搜索页/首页带入片名（/request?name=xxx）：直接展开表单并查库
   const prefill = ((route.query.name as string) || '').trim()
   if (prefill) {
@@ -718,6 +751,44 @@ onMounted(async () => {
         <p>没有符合筛选条件的记录</p>
       </div>
     </div>
+
+    <!-- v2 热门求片：所有人 pending 的求片（匿名），可附议；开关关闭时后端返回空列表 -->
+    <div v-if="hotList.length || hotLoading" class="hot-section au-anim-up">
+      <div class="section-head">
+        <h2 class="section-title">
+          <ThumbsUp :size="16" />
+          大家都在求
+        </h2>
+        <p class="section-sub">给想看的片附议，呼声越高越先安排</p>
+      </div>
+      <ul class="hot-list">
+        <li v-for="item in hotList" :key="item.id" class="au-card hot-item">
+          <div class="hot-info">
+            <h3 class="item-title">《{{ item.movie_name }}》</h3>
+            <div class="item-meta">
+              <span v-if="item.year">{{ item.year }}</span>
+              <span v-if="item.year && typeLabels[item.type || '']" class="meta-sep">·</span>
+              <span v-if="typeLabels[item.type || '']">{{ typeLabels[item.type || ''] }}</span>
+              <span v-if="item.season_label" class="meta-sep">·</span>
+              <span v-if="item.season_label" class="item-season">{{ item.season_label }}</span>
+              <span v-if="item.mine" class="meta-sep">·</span>
+              <span v-if="item.mine" class="item-mine">我求的</span>
+            </div>
+          </div>
+          <button
+            v-if="!item.mine"
+            class="au-btn au-btn-sm vote-btn"
+            :class="item.voted ? 'au-btn-primary' : 'au-btn-ghost'"
+            :disabled="voting === item.id"
+            @click="voteHot(item)"
+          >
+            <ThumbsUp :size="12" />
+            {{ item.voted ? '已附议' : '附议' }} · {{ item.vote_count }}
+          </button>
+          <span v-else class="vote-count-static">👍 {{ item.vote_count }}</span>
+        </li>
+      </ul>
+    </div>
   </div>
 </template>
 
@@ -944,6 +1015,21 @@ select.au-input option { background: var(--au-bg-soft); }
 
 .request-item { padding: 0.875rem 1rem; transition: border-color var(--au-fast) var(--au-ease); }
 .request-item:hover { border-color: var(--au-primary-border); }
+
+/* v2 热门求片 */
+.hot-section { margin-top: 1.5rem; }
+.section-head { margin-bottom: 0.75rem; }
+.section-title { display: flex; align-items: center; gap: 0.375rem; font-size: 1rem; font-weight: 700; color: var(--au-text-1); }
+.section-title svg { color: var(--au-primary); }
+.section-sub { font-size: 0.75rem; color: var(--au-text-3); margin-top: 0.25rem; }
+.hot-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.625rem; }
+.hot-item { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.75rem 1rem; }
+.hot-info { min-width: 0; }
+.hot-info .item-title { font-size: 0.9375rem; }
+.item-season { color: var(--au-primary); }
+.item-mine { color: var(--au-primary); font-weight: 600; }
+.vote-btn { flex-shrink: 0; white-space: nowrap; }
+.vote-count-static { flex-shrink: 0; font-size: 0.8125rem; color: var(--au-text-3); white-space: nowrap; }
 
 .item-head {
   display: flex;

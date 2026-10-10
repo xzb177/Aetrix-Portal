@@ -28,6 +28,8 @@ const columns = computed<DataColumn[]>(() => [
     ? [{ key: 'realm_name', label: '求给', minWidth: 110 } as DataColumn]
     : []),
   { key: 'status', label: '状态', width: 100 },
+  // v2 附议数：热度排序时一眼看出哪部片呼声最高
+  { key: 'vote_count', label: '附议', width: 80, align: 'center' },
   { key: 'push', label: '转交外部服务', width: 170 },
   { key: 'admin_note', label: '管理备注', minWidth: 140, mobile: 'hide' },
   { key: 'created_at', label: '提交时间', width: 150 },
@@ -39,6 +41,8 @@ const list = ref<MediaSeekRow[]>([])
 const loading = ref(false)
 const loadError = ref('')
 const statusFilter = ref('')
+// v2 排序：latest=按提交时间，hot=按附议数
+const orderBy = ref<'latest' | 'hot'>('latest')
 // 深链：仪表盘「待审求片」/ 命令面板跳过来时带的就是这个筛选（Phase 5）
 useQueryFilter(statusFilter, 'status', load)
 const busyId = ref<number | null>(null)
@@ -54,8 +58,10 @@ async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    const params: { status_filter?: string; realm_id?: number } = {}
+    const params: { status_filter?: string; realm_id?: number; order?: string } = {}
     if (statusFilter.value) params.status_filter = statusFilter.value
+    // v2 热度排序
+    if (orderBy.value === 'hot') params.order = 'hot'
     // 求片登记的是「给哪个服求」；realm_id=0 = 全部服（后端未标注的也算进来）
     params.realm_id = scope.value === 'all' ? 0 : (realm.activeId ?? 0)
     list.value = await fetchMediaSeeks(params)
@@ -263,6 +269,11 @@ function statusLabel(status: string): string {
           </el-select>
         </div>
         <div class="head-actions">
+          <!-- v2 排序：最新 / 热度（附议数） -->
+          <el-radio-group v-model="orderBy" aria-label="排序" @change="load">
+            <el-radio-button value="latest">最新</el-radio-button>
+            <el-radio-button value="hot">热度</el-radio-button>
+          </el-radio-group>
           <el-radio-group v-model="scope" aria-label="统计范围" @change="load">
             <el-radio-button value="realm">当前服</el-radio-button>
             <el-radio-button value="all">全部服</el-radio-button>
@@ -296,6 +307,11 @@ function statusLabel(status: string): string {
 
         <template #cell-status="{ row }">
           <span class="au-badge" :class="statusBadge(row.status)">{{ statusLabel(row.status) }}</span>
+        </template>
+
+        <!-- v2 附议数 -->
+        <template #cell-vote_count="{ row }">
+          <span class="vote-count" :class="{ 'vote-hot': (row.vote_count || 0) > 0 }">👍 {{ row.vote_count || 0 }}</span>
         </template>
 
         <template #cell-admin_note="{ row }">
@@ -476,6 +492,9 @@ function statusLabel(status: string): string {
 .movie-year { font-size: 12px; color: var(--au-text-3); margin-left: 6px; }
 .movie-season { margin-left: 6px; }
 .movie-note { font-size: 12px; color: var(--au-text-3); margin-top: 3px; }
+/* v2 附议数：有附议的高亮 */
+.vote-count { font-size: 13px; color: var(--au-text-3); white-space: nowrap; }
+.vote-count.vote-hot { color: var(--au-primary); font-weight: 600; }
 .muted { color: var(--au-text-4); font-size: 12px; }
 
 .push-guide { line-height: 1.7; }
