@@ -32,6 +32,7 @@ class StrmGenConfigSave(BaseModel):
     enabled: bool = Field(default=True, description="总开关")
     source_dir: str = Field(default="MoviePilot/", description="Drive 源目录（相对网盘根）")
     schedule: str = Field(default="03:00", description="每天执行时刻 HH:MM，空=关闭定时")
+    drive_id: str = Field(default="", description="指定 Drive ID，空=自动选择")
 
 
 class StrmGenTrigger(BaseModel):
@@ -43,6 +44,7 @@ def _read_config(db: Session) -> dict:
         "enabled": _gen.enabled(db),
         "source_dir": _gen.source_dir(db),
         "schedule": _gen.schedule(db),
+        "drive_id": _gen.drive_id_config(db),
         "last_run": store.get_value(db, _gen.CONFIG_LAST_RUN, ""),
     }
 
@@ -73,6 +75,7 @@ def strm_gen_config_save(body: StrmGenConfigSave,
     store.set_value(db, _gen.CONFIG_ENABLED, "true" if body.enabled else "false")
     store.set_value(db, _gen.CONFIG_SOURCE_DIR, (src + "/") if src else "")
     store.set_value(db, _gen.CONFIG_SCHEDULE, sched)
+    store.set_value(db, _gen.CONFIG_DRIVE_ID, (body.drive_id or "").strip())
     return {"success": True, "config": _read_config(db)}
 
 
@@ -80,17 +83,23 @@ def strm_gen_config_save(body: StrmGenConfigSave,
 def strm_gen_trigger(body: StrmGenTrigger,
                      db: Session = Depends(get_db),
                      _staff=Depends(require_staff)):
-    """手动触发一次生成（后台线程执行，立即返回）。"""
+    """手动触发一次生成（后台线程执行，立即返回）。
+
+    修 P3-6：旧实现先放行 HTTP 再由工作线程标记 running，快速连点两次
+    都会返回"已开始"，第二次实际被静默拒绝。现在先原子抢占运行权
+    （try_acquire），抢到才起线程。
+    """
     with _trigger_lock:
-        prog = _gen.get_progress()
-        if prog.get("running"):
-            return {"success": False, "error": "已有生成任务在运行中", "progress": prog}
+        if not _gen.try_acquire():
+            return {"success": False, "error": "已有生成任务在运行中",
+                    "progress": _gen.get_progress()}
 
         def _run():
             from backend.database import SessionLocal
             sess = SessionLocal()
             try:
-                _gen.run_generation(sess, full=body.full)
+                # 运行权已持有，走 claimed 路径（结束自动释放）
+                _gen.run_generation_claimed(sess, full=body.full)
             finally:
                 sess.close()
 
@@ -104,6 +113,16 @@ def strm_gen_progress(db: Session = Depends(get_db), _staff=Depends(require_staf
     """查生成进度（前端轮询用）。"""
     prog = _gen.get_progress()
     return {"success": True, "progress": prog, "config": _read_config(db)}
+
+
+@admin_emby_router.get("/strm-gen/drives")
+def strm_gen_drives(_staff=Depends(require_staff)):
+    """列出发现的 Drive（供 drive_id 配置选择）。"""
+    try:
+        drives = _gen.list_drives()
+        return {"success": True, "drives": drives}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
 
 
 @admin_emby_router.get("/strm-gen/missing")
