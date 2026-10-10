@@ -115,11 +115,14 @@ export interface PlanRow {
   realm_name?: string
 }
 
-/** 套餐清单；`realm_id=0` = 全部服，不传 = 当前服 */
+/** 套餐清单（只取启用中的，供授予订阅下拉用）；`realm_id=0` = 全部服，不传 = 当前服 */
 export const fetchPlans = (realm_id?: number) =>
   get<{ plans: PlanRow[]; realm_id: number | null; active_realm_id: number }>(
-    '/plans',
-    realm_id === undefined ? undefined : { realm_id }
+    '/economy/plans',
+    {
+      ...(realm_id === undefined ? {} : { realm_id }),
+      only_active: true,
+    }
   )
 
 export const grantSubscription = (userId: number, data: { plan_id: number; duration_days: number }) =>

@@ -168,6 +168,14 @@ function fmtDate(s: string): string {
       </template>
     </PageHeader>
 
+    <el-alert
+      class="mb-4"
+      type="info"
+      :closable="false"
+      show-icon
+      title="公告以首页横幅形式展示，并实时推送给所有在线用户；不会进入用户的站内信收件箱。"
+    />
+
     <SectionCard
       title="全部公告"
       :icon="Megaphone"

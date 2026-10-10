@@ -717,16 +717,6 @@ def _level_to_dict(lv: models.MemberLevel) -> dict:
     }
 
 
-class MemberLevelCreate(BaseModel):
-    level: int
-    name: str
-    xp_threshold: int = 0
-    discount_pct: int = Field(default=0, ge=0, le=100)
-    benefits: List[str] = []
-    badge_icon: str = ""
-    badge_color: str = "#9ca3af"
-
-
 class MemberLevelUpdate(BaseModel):
     name: Optional[str] = None
     xp_threshold: Optional[int] = None
@@ -742,34 +732,6 @@ def list_member_levels(current_admin: models.WebUser = Depends(get_current_admin
     ensure_member_levels_seeded(db)
     levels = db.query(models.MemberLevel).order_by(models.MemberLevel.level.asc()).all()
     return {"levels": [_level_to_dict(lv) for lv in levels]}
-
-
-@admin_router.post("/member-levels")
-def create_member_level(payload: MemberLevelCreate, current_admin: models.WebUser = Depends(get_current_admin), db: Session = Depends(get_db)):
-    # 校验等级范围与经验阈值
-    if payload.level < 1 or payload.level > 6:
-        raise HTTPException(status_code=400, detail="等级必须在 1-6 之间")
-    if payload.xp_threshold < 0:
-        raise HTTPException(status_code=400, detail="经验阈值不能为负数")
-    # 等级重复校验
-    exists = db.query(models.MemberLevel).filter(models.MemberLevel.level == payload.level).first()
-    if exists:
-        raise HTTPException(status_code=400, detail=f"等级 {payload.level} 已存在")
-    lv = models.MemberLevel(
-        level=payload.level,
-        name=payload.name,
-        xp_threshold=payload.xp_threshold,
-        discount_pct=payload.discount_pct,
-        benefits_json=json.dumps(payload.benefits, ensure_ascii=False),
-        badge_icon=payload.badge_icon,
-        badge_color=payload.badge_color,
-        is_active=True,
-    )
-    db.add(lv)
-    db.commit()
-    db.refresh(lv)
-    _audit(db, current_admin.id, "member_level_create", "member_level", lv.id, {"level": lv.level})
-    return {"level": _level_to_dict(lv)}
 
 
 @admin_router.put("/member-levels/{level_id}")

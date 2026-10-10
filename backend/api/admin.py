@@ -127,36 +127,6 @@ class SubscriptionExtendRequest(BaseModel):
 
 # ==================== 订阅管理 API ====================
 
-@admin_router.get("/plans")
-def list_plans(
-    realm_id: Optional[int] = None,
-    current_admin: models.WebUser = Depends(get_current_admin),
-    db: Session = Depends(get_db),
-):
-    """订阅套餐列表（授予订阅时选择用）—— 默认只列当前服的套餐
-
-    ``realm_id=0`` 表示全部服（跨服汇总时用）。
-    """
-    scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
-    query = realms.scope(db.query(models.SubscriptionPlan), models.SubscriptionPlan.realm_id, scope_id)
-    plans = query.filter(
-        models.SubscriptionPlan.is_active == True  # noqa: E712
-    ).order_by(models.SubscriptionPlan.sort_order).all()
-    return {"plans": [
-        {
-            "id": p.id, "name": p.name, "description": p.description,
-            "price": float(p.price), "duration_days": p.duration_days,
-            "is_popular": p.is_popular,
-            "realm_id": p.realm_id,
-            "realm_name": (p.realm.name if p.realm else ""),
-            "points_price": (float(p.points_price) if p.points_price is not None else None),
-        }
-        for p in plans
-    ],
-        "realm_id": scope_id,
-        "active_realm_id": realms.active_realm_id(db)}
-
-
 @admin_router.post("/users/{user_id}/subscriptions")
 async def grant_subscription(
     user_id: int,
@@ -1559,12 +1529,16 @@ class PlanUpsertRequest(BaseModel):
 @admin_router.get("/economy/plans")
 def economy_list_plans(
     realm_id: Optional[int] = None,
+    only_active: bool = False,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """订阅套餐（含停用）—— 默认只列当前服；``realm_id=0`` 列全部服"""
+    """订阅套餐 —— 默认含停用；``only_active=true`` 时只返回启用的套餐；
+    默认只列当前服，``realm_id=0`` 列全部服"""
     scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
     query = realms.scope(db.query(models.SubscriptionPlan), models.SubscriptionPlan.realm_id, scope_id)
+    if only_active:
+        query = query.filter(models.SubscriptionPlan.is_active == True)  # noqa: E712
     plans = query.order_by(
         models.SubscriptionPlan.sort_order, models.SubscriptionPlan.id
     ).all()

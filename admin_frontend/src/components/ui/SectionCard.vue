@@ -21,13 +21,15 @@ withDefaults(
     flush?: boolean
     /** 根元素标签：独立区块用 section，列表里的卡片可用 div / article */
     as?: string
+    /** 根元素 id：页内锚点导航用 */
+    id?: string
   }>(),
-  { title: '', meta: '', icon: undefined, description: '', tone: 'default', flush: false, as: 'section' },
+  { title: '', meta: '', icon: undefined, description: '', tone: 'default', flush: false, as: 'section', id: undefined },
 )
 </script>
 
 <template>
-  <component :is="as" class="au-section" :class="[`is-${tone}`, { 'is-flush': flush }]">
+  <component :is="as" :id="id || undefined" class="au-section" :class="[`is-${tone}`, { 'is-flush': flush }]">
     <header v-if="title || $slots.title || $slots.actions" class="au-section__head">
       <div class="au-section__heading">
         <h3 class="au-section__title">
