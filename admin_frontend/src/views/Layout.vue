@@ -151,6 +151,7 @@ const navGroups: NavGroup[] = [
       // 条目级的元数据（重刮 / 绑定 TMDB / 补全进度）与「按库配置」分开一处
       { path: '/metadata-sources', label: '元数据来源', icon: Database },
       { path: '/pan115', label: '115 账号', icon: Cloud },
+      { path: '/gdrive', label: 'Google Drive', icon: Cloud },
     ],
   },
   {
@@ -179,11 +180,10 @@ const navGroups: NavGroup[] = [
     items: [
       { path: '/goods', label: '商品与套餐', icon: Package },
       { path: '/orders', label: '订单', icon: Receipt },
-      { path: '/exchange-codes', label: '兑换码', icon: Gift },
       { path: '/coupons', label: '优惠券', icon: TicketPercent },
       { path: '/invitations', label: '邀请与积分', icon: UserPlus },
       { path: '/member-levels', label: '会员等级', icon: Crown },
-      { path: '/codes', label: '卡码管理', icon: KeySquare },
+      { path: '/codes', label: '码管理', icon: KeySquare },
     ],
   },
   {

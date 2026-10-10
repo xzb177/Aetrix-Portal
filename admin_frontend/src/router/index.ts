@@ -30,11 +30,11 @@ const routes: RouteRecordRaw[] = [
       { path: 'subscriptions', name: 'Subscriptions', component: () => import('@/views/Subscriptions.vue'), meta: { title: '订阅与权益' } },
       { path: 'goods', name: 'Goods', component: () => import('@/views/Goods.vue'), meta: { title: '商品管理' } },
       { path: 'orders', name: 'Orders', component: () => import('@/views/Orders.vue'), meta: { title: '运营·订单' } },
-      { path: 'exchange-codes', name: 'ExchangeCodes', component: () => import('@/views/ExchangeCodes.vue'), meta: { title: '运营·兑换码' } },
+      { path: 'exchange-codes', redirect: 'codes' },
       // 优惠券（v2.10.0）：与兑换码分工不同——兑换码不花钱拿东西，优惠券是付费时抵扣
       { path: 'coupons', name: 'Coupons', component: () => import('@/views/Coupons.vue'), meta: { title: '运营·优惠券' } },
       { path: 'invitations', name: 'Invitations', component: () => import('@/views/Invitations.vue'), meta: { title: '运营·邀请与积分' } },
-      { path: 'codes', name: 'RegistrationCodes', component: () => import('@/views/RegistrationCodes.vue'), meta: { title: '卡码管理' } },
+      { path: 'codes', name: 'Codes', component: () => import('@/views/Codes.vue'), meta: { title: '码管理' } },
       { path: 'devices', name: 'Devices', component: () => import('@/views/Devices.vue'), meta: { title: '设备与安全' } },
       { path: 'login-logs', name: 'LoginLogs', component: () => import('@/views/LoginLogs.vue'), meta: { title: '登录日志' } },
       // v2.43.0：防共享（跨城市轨迹 + 同播检测）。默认关闭，「处置」档仅超管可开。
@@ -60,6 +60,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'mounts', redirect: '/servers' },
       // v2.18.0：转存任务下线，页面只保留 115 账号；旧地址保留为跳转，收藏不会 404
       { path: 'pan115', alias: 'transfer-115', name: 'Pan115Accounts', component: () => import('@/views/Pan115Accounts.vue'), meta: { title: '115 账号' } },
+      { path: 'gdrive', name: 'GDriveAccounts', component: () => import('@/views/GDriveAccounts.vue'), meta: { title: 'Google Drive 账号' } },
       { path: 'settings', name: 'Settings', component: () => import('@/views/Settings.vue'), meta: { title: '系统设置' } },
       // v2.26.0：管理员与权限（角色 super / operator / viewer）与播放、客户端策略
       { path: 'admins', name: 'Admins', component: () => import('@/views/Admins.vue'), meta: { title: '管理员与权限' } },

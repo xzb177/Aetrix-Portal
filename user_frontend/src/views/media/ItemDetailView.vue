@@ -316,9 +316,20 @@ const resumeEpisode = computed(() => {
   )
 })
 
+const playLabel = computed(() => {
+  if (item.value?.Type === 'Series') {
+    if (resumeEpisode.value) return progress.value > 0 ? '继续播放' : '播放第一集'
+    // 全部看完：从第一集重看
+    return episodes.value.length ? '重新播放' : '播放第一集'
+  }
+  return progress.value > 0 ? '继续播放' : '立即播放'
+})
+
 function playTarget(): string {
   if (item.value?.Type === 'Series') {
-    return resumeEpisode.value ? `/watch/${resumeEpisode.value.Id}` : ''
+    // 全部看完时回到第一集重看，而不是返回空链接
+    const ep = resumeEpisode.value || episodes.value[0]
+    return ep ? `/watch/${ep.Id}` : ''
   }
   // 多版本：用选中的版本 Id
   if (hasVersions.value && selectedVersion.value) {
@@ -421,7 +432,7 @@ onMounted(loadItem)
             <div class="actions">
               <RouterLink :to="playTarget()" class="btn primary" :class="{ disabled: playTarget() === '' }">
                 <Play :size="16" />
-                {{ progress > 0 ? '继续播放' : (item.Type === 'Series' ? '播放第一集' : '立即播放') }}
+                {{ playLabel }}
               </RouterLink>
               <button class="btn ghost" :disabled="togglingFavorite" @click="toggleFavorite">
                 <Heart :size="16" :class="{ filled: isFavorite }" />

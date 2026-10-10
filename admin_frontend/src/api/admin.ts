@@ -180,6 +180,10 @@ export const generateCodes = (data: {
   note?: string
   /** 这批码开通哪个服的会员（留空 = 当前服） */
   realm_id?: number
+  /** M1：奖励类型 */
+  reward_type?: string
+  points_value?: number
+  discount_pct?: number
 }) => post<{
   success: boolean
   message: string

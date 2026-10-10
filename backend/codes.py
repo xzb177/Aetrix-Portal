@@ -395,11 +395,13 @@ def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
         if code.target_username:
             named_ok = bool(username) and code.target_username.strip().lower() == username.strip().lower()
         realm_id = code_realm_id(db, code)
-        return {
+        reward_type = getattr(code, 'reward_type', 'subscription') or 'subscription'
+        preview = {
             "valid": error is None and named_ok,
             "kind": "code",
             "code_type": code.code_type,
             "type_name": CODE_TYPE_NAMES.get(code.code_type, "卡码"),
+            "reward_type": reward_type,
             "days": normalize_days(code.days),
             "days_text": format_days(code.days),
             "is_named": bool(code.target_username),
@@ -410,6 +412,14 @@ def preview_code(db: Session, raw: str, username: Optional[str] = None) -> dict:
             "realm_name": realm_label(db, realm_id),
             "message": error or ("该卡码限指定账号使用" if not named_ok else "卡码有效"),
         }
+        # M1：非订阅奖励类型在预览中说明
+        if reward_type == 'points':
+            preview["points_value"] = getattr(code, 'points_value', 0) or 0
+            preview["message"] = error or (f"积分卡码（{preview['points_value']} 积分）" if named_ok else "该卡码限指定账号使用")
+        elif reward_type == 'discount':
+            preview["discount_pct"] = getattr(code, 'discount_pct', 0) or 0
+            preview["message"] = error or (f"折扣卡码（{100 - preview['discount_pct']} 折）" if named_ok else "该卡码限指定账号使用")
+        return preview
 
     invitation = db.query(models.InvitationCode).filter(
         func.upper(models.InvitationCode.code) == raw.upper()
@@ -512,6 +522,45 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
 
     # 占位与发奖在同一个事务里（本函数不提交，由调用方提交）；
     # 中间崩溃会一起回滚，不会出现「码烧了、会员没到账」
+    # M1 统一码系统：根据 reward_type 发放不同奖励
+    reward_type = getattr(code, 'reward_type', 'subscription') or 'subscription'
+    if reward_type == 'points':
+        points = getattr(code, 'points_value', 0) or 0
+        if points <= 0:
+            return {"success": False, "message": "该码的积分面额无效"}
+        from backend.api.economy import _add_points
+        _add_points(db, user, points, "code_redeem", f"卡码核销 {code.code}")
+        type_name = CODE_TYPE_NAMES.get(code.code_type, "卡码")
+        return {
+            "success": True,
+            "message": f"{type_name}核销成功，获得 {points} 积分",
+            "code_type": code.code_type,
+            "reward_type": "points",
+            "points": points,
+        }
+    if reward_type == 'discount':
+        pct = getattr(code, 'discount_pct', 0) or 0
+        if pct <= 0 or pct >= 100:
+            return {"success": False, "message": "该码的折扣无效"}
+        # 发放一张折扣权益（复用 ExchangeDiscountCredit 表）
+        credit = models.ExchangeDiscountCredit(
+            user_id=user.id,
+            exchange_code_id=0,  # 统一码系统：来源为 registration_codes
+            discount_pct=pct,
+            status='unused',
+            expires_at=code.expires_at,
+        )
+        # 记录来源码信息到备注（表结构无来源字段，用 user 备注区分）
+        db.add(credit)
+        type_name = CODE_TYPE_NAMES.get(code.code_type, "卡码")
+        return {
+            "success": True,
+            "message": f"{type_name}核销成功，获得 {100 - pct} 折优惠券一张",
+            "code_type": code.code_type,
+            "reward_type": "discount",
+            "discount_pct": pct,
+        }
+    # 默认：subscription，会员天数
     sub = grant_membership_days(db, user, days, target)
 
     type_name = CODE_TYPE_NAMES.get(code.code_type, "卡码")
@@ -520,6 +569,7 @@ def redeem_code(db: Session, user: models.WebUser, raw: str) -> dict:
         "message": (f"{type_name}核销成功，「{target_name}」会员到期时间 "
                     f"{sub.end_date.strftime('%Y-%m-%d %H:%M')}"),
         "code_type": code.code_type,
+        "reward_type": "subscription",
         "days": days,
         "realm_id": target,
         "realm_name": target_name,

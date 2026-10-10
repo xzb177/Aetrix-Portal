@@ -552,6 +552,13 @@ class RegistrationCodeBatchRequest(BaseModel):
     note: str = ""
     # 这批码开通哪个服的会员（留空 = 当前服）
     realm_id: Optional[int] = None
+    # M1：卡码类型与奖励类型
+    code_type: int = Field(default=1, ge=1, le=3)
+    days: int = Field(default=30, ge=-1)
+    reward_type: str = Field(default="subscription")
+    points_value: int = Field(default=0, ge=0)
+    discount_pct: int = Field(default=0, ge=0, le=100)
+    target_username: Optional[str] = None
 
 
 @admin_router.get("/registration-codes")
@@ -604,6 +611,13 @@ def create_registration_codes(
     if not realms.get_realm(db, target_realm):
         raise HTTPException(status_code=400, detail=f"服不存在: #{target_realm}")
     expires_at = datetime.now() + timedelta(days=request.expires_days)
+    # M1：校验奖励类型
+    if request.reward_type not in ("subscription", "points", "discount"):
+        raise HTTPException(status_code=400, detail="reward_type 非法")
+    if request.reward_type == "points" and request.points_value <= 0:
+        raise HTTPException(status_code=400, detail="积分卡码必须设置积分面额")
+    if request.reward_type == "discount" and not (0 < request.discount_pct < 100):
+        raise HTTPException(status_code=400, detail="折扣必须是 1-99")
     created = []
     for _ in range(request.count):
         code = models.RegistrationCode(
@@ -615,6 +629,12 @@ def create_registration_codes(
             expires_at=expires_at,
             created_by=current_admin.id,
             realm_id=target_realm,
+            code_type=request.code_type,
+            days=request.days,
+            target_username=request.target_username or None,
+            reward_type=request.reward_type,
+            points_value=request.points_value,
+            discount_pct=request.discount_pct,
         )
         db.add(code)
         created.append(code)
@@ -639,7 +659,12 @@ def create_registration_codes(
 
 
 class RegistrationCodeUpdateRequest(BaseModel):
-    is_active: bool
+    is_active: Optional[bool] = None
+    days: Optional[int] = None
+    reward_type: Optional[str] = None
+    points_value: Optional[int] = None
+    discount_pct: Optional[int] = None
+    note: Optional[str] = None
 
 
 @admin_router.put("/registration-codes/{code_id}")
@@ -649,19 +674,135 @@ def update_registration_code(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """启用/停用注册码"""
+    """更新注册码：启用/停用 + 面额修改（Fix 5）"""
     code = db.query(models.RegistrationCode).filter(
         models.RegistrationCode.id == code_id
     ).first()
     if not code:
         raise HTTPException(status_code=404, detail="注册码不存在")
 
-    code.is_active = request.is_active
+    changes = {}
+    if request.is_active is not None:
+        code.is_active = request.is_active
+        changes["is_active"] = request.is_active
+    # 面额修改：仅未使用的码允许改（已用过的改面额会造成账实不符）
+    if (code.use_count or 0) > 0 and (
+        request.days is not None or request.points_value is not None
+        or request.discount_pct is not None or request.reward_type is not None
+    ):
+        raise HTTPException(status_code=400, detail="已使用过的码不允许修改面额")
+    if request.days is not None:
+        code.days = request.days
+        changes["days"] = request.days
+    if request.reward_type is not None:
+        if request.reward_type not in ("subscription", "points", "discount"):
+            raise HTTPException(status_code=400, detail="reward_type 非法")
+        code.reward_type = request.reward_type
+        changes["reward_type"] = request.reward_type
+    if request.points_value is not None:
+        code.points_value = request.points_value
+        changes["points_value"] = request.points_value
+    if request.discount_pct is not None:
+        code.discount_pct = request.discount_pct
+        changes["discount_pct"] = request.discount_pct
+    if request.note is not None:
+        code.note = request.note
+        changes["note"] = request.note
     db.commit()
     _audit(db, current_admin, "update_registration_code", "registration_code",
-           code.id, {"is_active": request.is_active})
+           code.id, changes)
     db.commit()
     return {"success": True}
+
+
+@admin_router.delete("/registration-codes/{code_id}")
+def delete_registration_code(
+    code_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """删除注册码（Fix 5：建错无法删）"""
+    code = db.query(models.RegistrationCode).filter(
+        models.RegistrationCode.id == code_id
+    ).first()
+    if not code:
+        raise HTTPException(status_code=404, detail="注册码不存在")
+    if (code.use_count or 0) > 0:
+        raise HTTPException(status_code=400, detail="已使用过的码不允许删除（请停用）")
+    db.delete(code)
+    db.commit()
+    _audit(db, current_admin, "delete_registration_code", "registration_code",
+           code_id, {"code": code.code})
+    db.commit()
+    return {"success": True}
+
+
+# ---------- Google Drive SA 账号管理（Fix 6） ----------
+
+@admin_router.get("/gdrive/sa-status")
+def gdrive_sa_status(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Google Drive Service Account 状态：数量、当前轮换位置、磁盘压力"""
+    from pathlib import Path
+    import json
+    import shutil
+    from backend.emby_server import playback_tune
+
+    sa_dir = Path("/opt/rclone-sa")
+    sa_files = sorted(sa_dir.glob("*.json")) if sa_dir.exists() else []
+    # 轮换状态
+    state_file = sa_dir / ".sa_rotation.json"
+    current_sa = None
+    rotation_index = 0
+    if state_file.exists():
+        try:
+            state = json.loads(state_file.read_text())
+            rotation_index = state.get("index", 0)
+            if sa_files:
+                current_sa = sa_files[rotation_index % len(sa_files)].name
+        except Exception:
+            pass
+    # 磁盘压力
+    disk = playback_tune.check_disk_pressure("/") if hasattr(playback_tune, "check_disk_pressure") else {}
+    # rclone 缓存目录大小
+    cache_dir = Path("/var/cache/rclone-mp")
+    cache_size = 0
+    if cache_dir.exists():
+        try:
+            cache_size = sum(f.stat().st_size for f in cache_dir.rglob("*") if f.is_file())
+        except Exception:
+            pass
+
+    return {
+        "sa_count": len(sa_files),
+        "sa_files": [f.name for f in sa_files[:20]],  # 只返回前 20 个文件名
+        "sa_truncated": len(sa_files) > 20,
+        "current_sa": current_sa,
+        "rotation_index": rotation_index,
+        "disk": disk,
+        "cache_size_bytes": cache_size,
+        "cache_size_human": f"{cache_size / (1024**3):.1f} GB" if cache_size else "0",
+    }
+
+
+@admin_router.post("/gdrive/sa-rotate")
+def gdrive_sa_rotate(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """手动触发 SA 轮换（切换到下一个账号）"""
+    from pathlib import Path
+    from backend.emby_server import playback_tune
+
+    sa_dir = Path("/opt/rclone-sa")
+    if not sa_dir.exists():
+        raise HTTPException(status_code=404, detail="SA 目录不存在")
+    result = playback_tune.ensure_sa_rotation("/root/.config/rclone/rclone.conf")
+    _audit(db, current_admin, "gdrive_sa_rotate", "gdrive_sa", 0, {"sa_file": result.get("sa_file")})
+    db.commit()
+    return {"success": True, "sa_file": result.get("sa_file"), "mode": result.get("mode")}
 
 
 class RegistrationModeRequest(BaseModel):
@@ -1955,6 +2096,28 @@ def economy_update_exchange_code(
     db.commit()
     _audit(db, current_admin, "economy_update_exchange_code", "exchange_code",
            code.id, {"is_active": request.is_active})
+    db.commit()
+    return {"success": True}
+
+
+@admin_router.delete("/economy/exchange-codes/{code_id}")
+def economy_delete_exchange_code(
+    code_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """删除兑换码（Fix 5）"""
+    code = db.query(models.ExchangeCode).filter(
+        models.ExchangeCode.id == code_id
+    ).first()
+    if not code:
+        raise HTTPException(status_code=404, detail="兑换码不存在")
+    if (code.use_count or 0) > 0:
+        raise HTTPException(status_code=400, detail="已使用过的码不允许删除（请停用）")
+    db.delete(code)
+    db.commit()
+    _audit(db, current_admin, "economy_delete_exchange_code", "exchange_code",
+           code_id, {"code": code.code})
     db.commit()
     return {"success": True}
 

@@ -611,6 +611,10 @@ def _auto_migrate():
             ("target_username", "VARCHAR(50)", "NULL"),
             ("source", "VARCHAR(20)", "'admin'"),
             ("realm_id", "INTEGER", "NULL"),
+            # M1 统一码系统：并入兑换码的奖励类型
+            ("reward_type", "VARCHAR(20)", "'subscription'"),
+            ("points_value", "INTEGER", "0"),
+            ("discount_pct", "INTEGER", "0"),
         ]),
         # v2.6.4 媒体库刮削策略、虚拟媒体库与搜索增强；v2.6.5 增加 115 账号绑定
         # v2.6.6 增加存储挂载绑定（storage_mounts）：媒体库的内容来源

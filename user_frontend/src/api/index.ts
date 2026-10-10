@@ -684,4 +684,6 @@ export function isExpiringSoon(sub: MySubscription | null | undefined): boolean 
 export const subscriptionApi = {
   // 我的订阅列表（含剩余天数）
   getMine: () => api.get<never, MySubscription[]>('/api/user/subscriptions'),
+  // 终止订阅（立即失效）
+  cancel: (id: number) => api.post<never, { success: boolean; message: string }>(`/api/user/subscriptions/${id}/cancel`),
 }

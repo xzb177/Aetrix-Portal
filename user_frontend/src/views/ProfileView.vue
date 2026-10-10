@@ -48,8 +48,23 @@ const account = ref<AccountCard | null>(null)
 const accountError = ref(false)
 const stats = ref<WatchStats | null>(null)
 const subscriptions = ref<MySubscription[]>([])
+const cancellingSub = ref<number | null>(null)
 
 const activeSub = computed(() => subscriptions.value.find(s => s.status === 'active' && s.days_left > 0) || null)
+
+async function cancelSubscription(s: MySubscription) {
+  if (!confirm(`确定要终止「${s.plan_name}」订阅吗？终止后立即失效，不可恢复。`)) return
+  cancellingSub.value = s.id
+  try {
+    const res = await subscriptionApi.cancel(s.id)
+    toast.success(res.message || '订阅已终止')
+    await loadProfile(true)
+  } catch (err: any) {
+    toast.error(err?.response?.data?.detail || '终止失败，请稍后重试')
+  } finally {
+    cancellingSub.value = null
+  }
+}
 // 临期：与后台到期提醒同口径（默认 7 天），续费入口就在钱包页
 const expiringSoon = computed(() => isExpiringSoon(activeSub.value))
 const watchHours = computed(() => {
@@ -552,6 +567,13 @@ function formatDate(iso?: string | null) {
               <span class="badge" :class="s.status === 'active' ? 'ok' : 'off'">
                 {{ s.status === 'active' ? '生效中' : '已结束' }}
               </span>
+              <button
+                v-if="s.status === 'active'"
+                type="button"
+                class="link-danger"
+                :disabled="cancellingSub === s.id"
+                @click="cancelSubscription(s)"
+              >{{ cancellingSub === s.id ? '终止中…' : '终止' }}</button>
             </li>
           </ul>
         </section>
