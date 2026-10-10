@@ -1,4 +1,4 @@
-"""Rex（用心播放器）一键导入 deep link 生成规则测试。
+"""Rex 播放器一键导入 deep link 生成规则测试。
 
 为什么值得测：`rex://import` 的 host/port 从服务器地址解析出来，
 拼错了用户点按钮只会「打不开 App」，属于用户不会报障的那类坑。
@@ -9,13 +9,13 @@ import os
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("REDIS_ENABLED", "false")
 
-from backend.emby_server.portal import _rex_import_link, YONGXIN_IMPORT_URL
+from backend.emby_server.portal import _rex_import_link, REX_IMPORT_URL
 
 
 def test_uses_rex_scheme():
     got = _rex_import_link("https://emby.135505.autos", "emby_1_a82c3e")
-    assert got.startswith(YONGXIN_IMPORT_URL + "?type=emby&")
-    assert YONGXIN_IMPORT_URL == "rex://import", got
+    assert got.startswith(REX_IMPORT_URL + "?type=emby&")
+    assert REX_IMPORT_URL == "rex://import", got
 
 
 def test_https_without_port_defaults_to_443():
