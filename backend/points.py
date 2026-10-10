@@ -58,6 +58,10 @@ def award_chat_points(db: Session, user_id: int) -> int:
     cap = _get_int(db, "points_chat_daily_cap", 20)
     per_msg = _get_int(db, "points_chat_per_msg", 1)
 
+    # P2 修复（审查）：每日上限是"先 SUM 后判"，并发两请求都读到同一旧用量、
+    # 都判定未超限 → 超发。先锁用户行再统计（与红包频率检查同口径）。
+    economy.lock_user_row(db, user_id)
+
     today = _today_start()
     earned_today = db.query(func.coalesce(func.sum(models.PointsLog.amount), 0)).filter(
         models.PointsLog.user_id == user_id,
