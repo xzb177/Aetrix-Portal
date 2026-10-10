@@ -334,7 +334,10 @@ onMounted(() => {
 
 // 从别的 tab 切回来（KeepAlive 缓存命中）：后台静默刷新，不闪骨架屏
 onActivated(() => {
-  if (hasLoaded.value) loadProfile(true)
+  if (hasLoaded.value) {
+    loadProfile(true)
+    loadTgStatus() // Bot 端绑定后切回本页，徽章不再过期
+  }
 })
 
 function formatDate(iso?: string | null) {
