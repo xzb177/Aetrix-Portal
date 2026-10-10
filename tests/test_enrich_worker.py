@@ -830,3 +830,63 @@ def test_genuine_miss_still_terminal_none(db, monkeypatch):
     assert outcome == "done"
     assert it.metadata_source == "none"
     assert it.enrich_status == "done"
+
+
+# ---------------------------------------------------------------------------
+# v2.54.0 方案1 测试：TMDB-miss 时的多源兜底
+# ---------------------------------------------------------------------------
+
+def test_should_multisource_on_tmdb_miss_english_title(db):
+    """非中文标题不走多源兜底（TMDB 已是最优）"""
+    from backend.emby_server import enrich_worker as ew
+    it = _make_item(db, item_type="series", name="Breaking Bad", file_path=None)
+    assert ew._should_multisource_on_tmdb_miss(it, "series") is False
+
+
+def test_should_multisource_on_tmdb_miss_non_series(db):
+    """非剧/电影类型不走多源兜底"""
+    from backend.emby_server import enrich_worker as ew
+    it = _make_item(db, item_type="episode", name="中文剧集", file_path=None)
+    assert ew._should_multisource_on_tmdb_miss(it, "episode") is False
+
+
+def test_should_multisource_on_tmdb_miss_with_tmdb_id(db):
+    """已有 tmdb_id 的不走多源兜底"""
+    from backend.emby_server import enrich_worker as ew
+    it = _make_item(db, item_type="series", name="中文剧",
+                    file_path=None, tmdb_id="12345")
+    assert ew._should_multisource_on_tmdb_miss(it, "series") is False
+
+
+def test_should_multisource_on_tmdb_miss_switch_off(db):
+    """多源总开关关闭时不走兜底（默认行为不变）"""
+    from backend.emby_server import enrich_worker as ew
+    from backend.models import SystemConfig
+    # 确保开关关闭
+    cfg = db.query(SystemConfig).filter_by(key="meta_sources_enabled").first()
+    if cfg:
+        cfg.value = "0"
+    else:
+        db.add(SystemConfig(key="meta_sources_enabled", value="0"))
+    db.commit()
+
+    it = _make_item(db, item_type="series", name="中文剧集", file_path=None)
+    assert ew._should_multisource_on_tmdb_miss(it, "series") is False
+
+
+def test_collect_multisource_guarded_semaphore():
+    """并发信号量：拿不到时返回 False，不阻塞"""
+    from backend.emby_server import enrich_worker as ew
+    # 占满信号量（2 个许可）
+    assert ew._MULTISOURCE_SEMAPHORE.acquire(blocking=False)
+    assert ew._MULTISOURCE_SEMAPHORE.acquire(blocking=False)
+    try:
+        # 第三个拿不到
+        from unittest.mock import MagicMock
+        item = MagicMock()
+        item.name = "测试"
+        result = {}
+        assert ew._collect_multisource_guarded(item, "series", result) is False
+    finally:
+        ew._MULTISOURCE_SEMAPHORE.release()
+        ew._MULTISOURCE_SEMAPHORE.release()

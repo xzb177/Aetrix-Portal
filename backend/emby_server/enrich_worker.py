@@ -263,6 +263,81 @@ def _collect_multisource(item: Any, kind: str, result: dict) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# 方案1 (v2.54.0): TMDB-miss 时的多源兜底（带性能护栏）
+#
+# 背景：v2.42.9 为救性能（8 个线程全卡在豆瓣+Bangumi 慢查询上），在 TMDB 已配置
+# 且搜过无命中时直接跳过整个 fallback，导致多源引擎永不执行、后台配置的源优先级
+# 形同虚设。现在加三道护栏后恢复：
+#   1. 只对中文标题触发 —— TMDB 对中文收录差，中文源能补上；纯英文标题 TMDB 已是
+#      最优，再问中文源是浪费；
+#   2. 多源引擎自带 40s 总超时 + 7 源上限（metasources/config.py）；
+#   3. 信号量限并发 —— 最多 2 个线程同时跑多源，防止慢源拖垮所有 worker。
+# ---------------------------------------------------------------------------
+_MULTISOURCE_SEMAPHORE = threading.Semaphore(2)
+
+
+def _should_multisource_on_tmdb_miss(item: Any, kind: str) -> bool:
+    """TMDB 搜过无命中时，是否值得走多源兜底。
+
+    只对中文标题的剧/电影触发：TMDB 对中文剧集/综艺收录偏少，中文源能补上；
+    非中文标题走 TMDB 已经是最优解，不必再烧一次多源。
+
+    前置检查多源总开关：关着时直接返回 False，避免不必要的 DB 会话与引擎调用
+    （测试环境默认关闭，保持原有行为不变）。
+
+    v2.54.0 新增独立开关 ``meta_sources_tmdb_miss_fallback``（默认 0 关闭）：
+    只有显式打开时才在 TMDB-miss 路径走多源兜底。避免默认开启改变现有行为。
+    """
+    if kind not in ("series", "movie"):
+        return False
+    if getattr(item, "tmdb_id", None):
+        return False
+    name = (item.name or "").strip()
+    if not name:
+        return False
+    try:
+        from backend.emby_server import douban as _dbn
+        if not _dbn.has_cjk(name):
+            return False
+    except Exception:  # noqa: BLE001 — 判定不了就不走兜底，不影响主流程
+        return False
+    # 前置检查总开关与独立开关：都开着才走兜底
+    try:
+        from backend.emby_server.metasources import config as ms_config
+        from backend.emby_server.metasources import sources as ms_sources
+        _db = SessionLocal()
+        try:
+            snapshot = ms_config.read_config(_db, ms_sources.SPECS)
+            if not snapshot.enabled:
+                return False
+            # 独立开关：meta_sources_tmdb_miss_fallback，默认关闭
+            from backend.models import SystemConfig
+            _flag = _db.query(SystemConfig).filter_by(
+                key="meta_sources_tmdb_miss_fallback").first()
+            if not _flag or (_flag.value or "").strip() not in ("1", "true", "yes", "on"):
+                return False
+        finally:
+            _db.close()
+    except Exception:  # noqa: BLE001 — 读不到配置就不走兜底
+        return False
+    return True
+
+
+def _collect_multisource_guarded(item: Any, kind: str, result: dict) -> bool:
+    """带并发限制的多源采集（方案1 的护栏3）。
+
+    拿不到信号量时直接返回 False（调用方记 skip，不阻塞 worker 线程）。
+    """
+    if not _MULTISOURCE_SEMAPHORE.acquire(blocking=False):
+        logger.debug("多源并发已满(2)，跳过兜底 %r", getattr(item, "name", ""))
+        return False
+    try:
+        return _collect_multisource(item, kind, result)
+    finally:
+        _MULTISOURCE_SEMAPHORE.release()
+
+
 def _fetch_episode_tmdb(item: Any, inherit_parent: Optional[dict],
                        result: dict) -> None:
     """单集 TMDB 补全（v2.50.0）：父级剧有 tmdb_id 时，拉取本集的标题/简介/剧照。
@@ -726,10 +801,24 @@ def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
         # 直接跳过兜底——父级由写库阶段终态化（done + none，见 _enrich_apply），
         # 子集立刻纯继承；兜底仍保留：TMDB 未配置（豆瓣是主数据源）、
         # repair 请求（用户等着的）。跳过的随时可用管理端「重试未匹配项」补搜。
+        #
+        # v2.54.0 方案1：TMDB 搜过无命中时，对中文标题恢复多源兜底
+        # （_should_multisource_on_tmdb_miss + _collect_multisource_guarded，
+        # 三道护栏见函数上方的注释）。非中文标题仍跳过——TMDB 已是最优。
+        # 外层 try 包住：任何异常都回退到 skip，绝不影响原有终态逻辑。
         if (kind in ("series", "movie") and not getattr(item, "tmdb_id", None)
                 and not result.get("tmdb_hit")):
             if tmdb_client.configured and not needs_repair:
-                progress.note_stage("enrich_fallback_skip")
+                try:
+                    if _should_multisource_on_tmdb_miss(item, kind):
+                        if _collect_multisource_guarded(item, kind, result):
+                            progress.note_stage("enrich_multisource_fallback")
+                        else:
+                            progress.note_stage("enrich_fallback_skip")
+                    else:
+                        progress.note_stage("enrich_fallback_skip")
+                except Exception:  # noqa: BLE001 — 兜底失败不影响主流程
+                    progress.note_stage("enrich_fallback_skip")
             else:
                 # Phase 6b：多源总开关打开时，这一块交给多源引擎
                 # （七个源按顺序问、字段按序填充、单源失败隔离）。
