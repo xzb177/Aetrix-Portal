@@ -13,6 +13,7 @@ import { embyApi, posterUrl, backdropUrl, progressPercent, ticksToSeconds, forma
 import { useToast } from '@/composables/useToast'
 import { pageTitle } from '@/composables/useBranding'
 import { useUserStore } from '@/stores/user'
+import { usePosterAmbiance } from '@/composables/usePosterAmbiance'
 import {
   Play, Star, Heart, Eye, EyeOff, Clock, Layers, ChevronLeft, ChevronDown, Film,
   Crown, Sparkles, Check,
@@ -54,6 +55,7 @@ const realmNote = computed(
 const itemId = computed(() => route.params.id as string)
 
 const poster = computed(() => (item.value ? posterUrl(item.value, 480) : ''))
+const { ambianceStyle } = usePosterAmbiance(poster)
 /** SYS-4：海报 404/过期时切到首字占位 */
 const posterOk = ref(true)
 const failedEpPosters = ref(new Set<string>())
@@ -355,7 +357,9 @@ onMounted(loadItem)
       </div>
 
       <template v-else-if="item">
-        <div class="head-grid">
+        <div class="detail-ambiance-wrap">
+          <div class="ambiance-bg" :style="{ background: ambianceStyle }"></div>
+          <div class="head-grid">
           <div class="poster-col">
             <img decoding="async" v-if="poster && posterOk" :src="poster" :alt="item.Name" class="poster" @error="posterOk = false" />
             <div v-else class="poster placeholder">
@@ -469,6 +473,7 @@ onMounted(loadItem)
               </RouterLink>
             </div>
           </div>
+        </div>
         </div>
 
         <!-- 剧集：季切换 + 集列表 -->
@@ -635,6 +640,32 @@ onMounted(loadItem)
 
 @keyframes pulse {
   50% { opacity: 0.4; }
+}
+
+.detail-ambiance-wrap {
+  position: relative;
+  margin: -1.25rem -1.25rem 0;
+  padding: 1.25rem 1.25rem 0;
+  overflow: hidden;
+}
+
+.ambiance-bg {
+  position: absolute;
+  inset: 0;
+  height: 40%;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 800ms ease-out;
+  filter: blur(40px);
+  transform: scale(1.2);
+}
+
+.ambiance-bg[style*="radial-gradient"] {
+  opacity: 1;
+}
+
+html[data-theme='light'] .ambiance-bg {
+  display: none;
 }
 
 .head-grid {
@@ -1388,3 +1419,4 @@ onMounted(loadItem)
   font-weight: 600;
 }
 </style>
+
