@@ -260,11 +260,14 @@ def _validate_vitality_settings(db: Session, settings: dict) -> None:
 
     merged = {k: _final(k) for k in _vitality.VITALITY_DEFAULTS}
     errors = _vitality.validate_vitality_config(merged)
-    # 只报错本次请求实际提交的 key，避免存量合法值被无关请求挡住
-    relevant = {k: v for k, v in errors.items() if k in settings}
-    if relevant:
-        first_key = next(iter(relevant))
-        raise HTTPException(status_code=400, detail=relevant[first_key])
+    # 注意：不能只保留本次提交的 key 再报错。跨字段错误（如 threshold > max）
+    # 会被归因到本次未提交的 key 上，过滤后 errors 为空 → 非法组合直接存库。
+    # 后果：max < threshold 存入后，所有公益服用户活力值被钳制在 max 以下，
+    # 永远达不到观影阈值 → 全员 403 无法观影，且管理员收不到任何提示。
+    # 因此合并后的全部错误都要拦截；若库里本就有非法存量值，这次也会一并暴露出来。
+    if errors:
+        first_key = next(iter(errors))
+        raise HTTPException(status_code=400, detail=errors[first_key])
 
 
 def _validate_checkin_settings(db: Session, settings: dict) -> None:
