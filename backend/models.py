@@ -928,6 +928,11 @@ class RegistrationCode(Base):
     days = Column(Integer, default=30)  # 授予或叠加的会员天数；-1 表示永久
     target_username = Column(String(50))  # 指名码：非空时仅限该用户名使用
     source = Column(String(20), default='admin')  # admin 管理员发放 / invite 邀请体系生成
+    # ===== M1 统一码系统：并入兑换码的奖励类型 =====
+    # reward_type: subscription 会员天数（默认，原卡码行为）/ points 积分 / discount 折扣权益
+    reward_type = Column(String(20), default='subscription')
+    points_value = Column(Integer, default=0)  # points 型：兑换积分数
+    discount_pct = Column(Integer, default=0)  # discount 型：实付百分比，85=八五折
 
 
 class UserDevice(Base):
