@@ -121,7 +121,7 @@ def test_serialize_masks_node_key():
     db = SessionLocal()
     try:
         srv = models.RemoteServer(name="review-srv", kind="ea",
-                                  url="http://x", node_key="SECRET_NODE_KEY_123")
+                                  url="http://x", node_key="SECRET_NODE_KEY_123")  # secret-scan: allow —— 单元测试用的假密钥，非真实凭据
         out = servers_mod.serialize(db, srv)
         assert out["node_key"] != "SECRET_NODE_KEY_123", "node_key 明文泄露！"
         assert out["node_key_set"] is True
