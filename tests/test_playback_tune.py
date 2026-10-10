@@ -263,3 +263,28 @@ def test_range_limiter_threaded():
     assert len(entered) == 6
     assert time.monotonic() - t0 >= 0.35
 
+
+
+def test_sa_rotation_finds_sa_subdir(tmp_path):
+    # 生产 /opt/rclone-sa 布局是 sa/*.json（drive_changes 同口径）
+    root = tmp_path / "rclone-sa"
+    (root / "sa").mkdir(parents=True)
+    (root / "sa" / "a.json").write_text("{}")
+    conf = tmp_path / "rclone.conf"
+    _write_conf(conf, "[MP]\ntype = drive\nservice_account_file = /old/x.json\n")
+    r = pt.ensure_sa_rotation(conf, root, state_path=tmp_path / "s.json")
+    assert r["sa_file"] and r["sa_file"].endswith("a.json")
+
+
+def test_admin_sa_rotate_endpoint_passes_sa_dir():
+    """/gdrive/sa-rotate 以前漏传 sa_dir → 每次 TypeError 500。"""
+    from unittest import mock
+    from backend.api import admin as admin_api
+    with mock.patch.object(pt, "ensure_sa_rotation", autospec=True,
+                           return_value={"sa_file": "/x/a.json", "mode": "single"}) as m, \
+            mock.patch("pathlib.Path.exists", return_value=True), \
+            mock.patch.object(admin_api, "_audit"):
+        out = admin_api.gdrive_sa_rotate(current_admin=mock.MagicMock(),
+                                         db=mock.MagicMock())
+    assert out["success"] is True and out["sa_file"] == "/x/a.json"
+    assert str(m.call_args[0][1]) == "/opt/rclone-sa"

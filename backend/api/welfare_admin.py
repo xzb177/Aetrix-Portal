@@ -541,6 +541,15 @@ def draw_lottery_round(
         raise HTTPException(status_code=404, detail="抽奖活动不存在")
     if dict(row._mapping).get("status") != "open":
         raise HTTPException(status_code=400, detail="只能对进行中的活动开奖")
+    # 原子认领（与自动开奖调度 run_due_draws 同一口径）：只看 status 再开奖是读-判-写，
+    # 管理员手动开奖与调度/重复点击并发时会两边都开奖、两边都发奖
+    claimed = db.execute(
+        text("UPDATE lottery_rounds SET status='drawing' WHERE id=:id AND status='open'"),
+        {"id": round_id},
+    ).rowcount
+    db.commit()
+    if not claimed:
+        raise HTTPException(status_code=409, detail="该活动正在开奖或已开奖，请刷新后查看")
     winners = lottery_module.draw_round(db, round_id)
     distribute_result = lottery_module.distribute_round(db, round_id)
     _audit(db, current_admin.id, "lottery_round_draw", "lottery_round", round_id, {"winner_count": len(winners) if isinstance(winners, list) else 0})

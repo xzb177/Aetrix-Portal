@@ -93,6 +93,9 @@ def _add_vitality(db: Session, user_id: int, delta: int, reason: str) -> int:
     db.add(models.VitalityLog(user_id=user_id, delta=delta, balance_after=final, reason=reason))
     return final
 
+_DEDUCT_BATCH = 500
+
+
 def daily_deduct(db: Session) -> dict:
     """每日 00:00 扣减公益服用户活力值"""
     cfg = get_vitality_config(db)
@@ -101,12 +104,14 @@ def daily_deduct(db: Session) -> dict:
     cost = cfg["daily_cost"]
     deducted = 0
     suspended = 0
-    offset = 0
-    batch = 500
+    last_id = 0
+    # 键集分页（id > last_id）而不是 offset：过滤条件是 vitality > 0，本批扣到 0 的用户
+    # 会从结果集里消失，offset 继续往后跳就会整批漏扣后面的用户
     while True:
         rows = (db.query(models.WebUser.id)
-                .filter(models.WebUser.is_welfare == True, models.WebUser.vitality > 0)
-                .order_by(models.WebUser.id).offset(offset).limit(batch).all())
+                .filter(models.WebUser.is_welfare == True, models.WebUser.vitality > 0,
+                        models.WebUser.id > last_id)
+                .order_by(models.WebUser.id).limit(_DEDUCT_BATCH).all())
         if not rows:
             break
         for (uid,) in rows:
@@ -118,7 +123,7 @@ def daily_deduct(db: Session) -> dict:
             except Exception:
                 logger.exception("vitality daily_deduct failed for user %s", uid)
         db.commit()
-        offset += batch
+        last_id = rows[-1][0]
     return {"deducted": deducted, "suspended": suspended}
 
 _SCHEDULER_STARTED = False
@@ -127,6 +132,42 @@ CONFIG_LAST_DEDUCT_DATE = "vitality_last_deduct_date"
 
 def _today_str() -> str:
     return date.today().isoformat()
+
+def claim_daily_deduct(db: Session, today: str) -> bool:
+    """原子认领「今天的活力值扣减」：认领成功返回 True（本进程负责扣减），否则 False。
+
+    旧实现是「读上次日期 → 扣减 → 再写日期」：多个 worker 进程/实例各有一个调度线程，
+    会同时读到旧日期、各扣一遍（公益服用户活力被双倍扣减，提前停播）；扣减中途崩溃
+    重启也会再扣一遍。现在先用 UPDATE ... WHERE value != today（无行时 INSERT，唯一键兜底）
+    认领并提交，再扣减。代价：认领后扣减中途崩溃，当天少扣（对用户有利，不会重复扣）。
+    """
+    from sqlalchemy import or_
+    from sqlalchemy.exc import IntegrityError
+
+    claimed = (
+        db.query(models.SystemConfig)
+        .filter(
+            models.SystemConfig.key == CONFIG_LAST_DEDUCT_DATE,
+            or_(models.SystemConfig.value.is_(None), models.SystemConfig.value != today),
+        )
+        .update({"value": today}, synchronize_session=False)
+    )
+    if claimed:
+        db.commit()
+        return True
+    exists = db.query(models.SystemConfig.id).filter(
+        models.SystemConfig.key == CONFIG_LAST_DEDUCT_DATE).first()
+    if exists:
+        db.rollback()
+        return False
+    db.add(models.SystemConfig(key=CONFIG_LAST_DEDUCT_DATE, value=today))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return False
+    return True
+
 
 def start_vitality_scheduler() -> bool:
     """启动每日活力值扣减调度（daemon 线程，同一进程只启动一次）
@@ -145,20 +186,14 @@ def start_vitality_scheduler() -> bool:
             from backend.database import SessionLocal
             db = SessionLocal()
             try:
-                last = store.get_value(db, CONFIG_LAST_DEDUCT_DATE, "")
                 today = _today_str()
-                if last == today:
+                if store.get_value(db, CONFIG_LAST_DEDUCT_DATE, "") == today:
                     return
-                result = daily_deduct(db)
-                # 记录执行日期（daily_deduct 内部已 commit，这里再写一行）
-                row = db.query(models.SystemConfig).filter(
-                    models.SystemConfig.key == CONFIG_LAST_DEDUCT_DATE).first()
-                if row:
-                    row.value = today
-                else:
-                    db.add(models.SystemConfig(key=CONFIG_LAST_DEDUCT_DATE, value=today))
-                db.commit()
+                # 先原子认领当天，再扣减：多进程/多实例同时跑调度时只有一个能扣
+                if not claim_daily_deduct(db, today):
+                    return
                 store.invalidate(CONFIG_LAST_DEDUCT_DATE)
+                result = daily_deduct(db)
                 logger.info("活力值每日扣减完成: %s", result)
             finally:
                 db.close()
@@ -176,5 +211,5 @@ def start_vitality_scheduler() -> bool:
 
 __all__ = [
     "VITALITY_DEFAULTS", "get_vitality_config", "vitality_status",
-    "ensure_can_play", "daily_deduct", "start_vitality_scheduler",
+    "ensure_can_play", "daily_deduct", "claim_daily_deduct", "start_vitality_scheduler",
 ]

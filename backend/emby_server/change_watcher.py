@@ -239,6 +239,29 @@ def _try_advisory_lock(db: Session) -> bool:
         return _LOCAL_ADVISORY_LOCK.acquire(blocking=False)
 
 
+def _release_advisory_lock(db: Session) -> None:
+    """释放 ``_try_advisory_lock`` 拿到的锁。
+
+    PG 的 session 级 advisory 锁**不会**随 ``Session.close()`` 释放：close 只把连接
+    还回连接池，物理连接还活着，锁就一直挂在那条池连接上。之后本进程从池里拿到
+    别的连接、或另一个容器来抢，都 ``pg_try_advisory_lock`` 失败——追新从此
+    每轮「未拿到锁，跳过」，静默停摆。所以必须显式 ``pg_advisory_unlock``。
+    """
+    from sqlalchemy import text  # 函数内导入
+    try:
+        db.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _ADVISORY_LOCK_KEY})
+        db.commit()
+        return
+    except Exception:
+        # sqlite 等：走的是进程内线程锁
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    if _LOCAL_ADVISORY_LOCK.locked():
+        _LOCAL_ADVISORY_LOCK.release()
+
+
 def _parse_interval(raw: str) -> int:
     """解析轮询间隔，非法值按默认处理"""
     try:
@@ -418,7 +441,11 @@ def _find_new_videos_remote(db: Session, library_id: int, mount_id: int,
     返回 (新增/变更文件的 mount:// URL 列表, 本轮列举的文件数)。
     异常直接抛给调用方（调用方记 consec_failures）。
     """
-    skey = f"mount://{mount_id}"
+    # 源 key 必须精确到「挂载 + 库内目录」：以前按挂载（mount://3）算，而生产
+    # 所有库都在 mount://3 下——第一个库跑完把 last_snapshot_at 置成 now，
+    # 同一挂载上的其它库/目录在「每源每小时一次」门控下**永远被跳过**，
+    # 新片只有第一个库能被追到。
+    skey = _mount_url(mount_id, rel_dir or "/")
     state = _get_source_state(db, skey)
     if state and state.last_snapshot_at:
         last_dt = state.last_snapshot_at
@@ -669,9 +696,9 @@ def _maybe_check_once() -> None:
             try:
                 _check_once()
             finally:
-                # 降级到进程内锁时手动释放；PG advisory 锁随 session 关闭自动释放
-                if _LOCAL_ADVISORY_LOCK.locked():
-                    _LOCAL_ADVISORY_LOCK.release()
+                # PG advisory 锁不会随 session 关闭释放（连接回池仍存活），必须显式解锁；
+                # 降级到进程内锁时释放线程锁
+                _release_advisory_lock(db)
         else:
             logger.debug("[chase-new] 未拿到 advisory lock，本轮跳过（另一进程正在跑）")
     finally:

@@ -181,6 +181,47 @@ def _add_points(
     return balance
 
 
+class InsufficientPoints(ValueError):
+    """余额不足（_spend_points 的条件扣减没扣到）"""
+
+
+def _spend_points(
+    db: Session, user: models.WebUser, cost: int,
+    type_: str, description: str, ref_id: str | None = None,
+) -> int:
+    """原子扣积分：``UPDATE ... SET points = points - cost WHERE points >= cost``。
+
+    「先读余额判断够不够、再 _add_points 扣」是读-改-写：两个并发请求都读到同一旧余额、
+    都判定够用，然后各扣一次 → 余额被扣成负数（双花）。这里把「够不够」放进 UPDATE 的
+    WHERE 里由数据库判定：并发第二个请求在行锁上等前者提交后拿到 0 行 → InsufficientPoints。
+    成功时写台账并返回扣后余额；失败时什么都没写（调用方按需回滚自己的其它改动）。
+    """
+    cost = int(cost)
+    if cost <= 0:
+        raise ValueError("扣减积分必须为正数")
+    updated = (
+        db.query(models.WebUser)
+        .filter(
+            models.WebUser.id == user.id,
+            func.coalesce(models.WebUser.points, 0) >= cost,
+        )
+        .update(
+            {models.WebUser.points: func.coalesce(models.WebUser.points, 0) - cost},
+            synchronize_session="fetch",
+        )
+    )
+    if not updated:
+        balance = int(
+            db.query(models.WebUser.points).filter(models.WebUser.id == user.id).scalar() or 0
+        )
+        raise InsufficientPoints(f"积分不足，需要 {cost} 分，当前 {balance} 分")
+    balance = int(
+        db.query(models.WebUser.points).filter(models.WebUser.id == user.id).scalar() or 0
+    )
+    _append_points_log(db, user.id, -cost, balance, type_, description, ref_id)
+    return balance
+
+
 def verify_points_chain(db: Session, user_id: int, limit: int = 20000) -> dict:
     """C3 流水审计：核验某用户的积分流水 hash 链是否完整。
 
@@ -1044,7 +1085,14 @@ def create_payment_order(
             balance = db.query(models.WebUser.points).filter(models.WebUser.id == current_user.id).scalar() or 0
             if balance < points_cost:
                 raise HTTPException(status_code=400, detail=f"积分不足（需要 {points_cost}，当前 {int(balance)}）")
-            _add_points(db, current_user, -points_cost, "subscription_buy", f"积分购买订阅 - {plan.name}", f"subscription_points:{order_id}")
+            # 原子条件扣减：上面的余额预检只用于给出友好提示，真正的够不够由 UPDATE 判定，
+            # 防并发双下单把余额扣成负数（双花）
+            try:
+                _spend_points(db, current_user, points_cost, "subscription_buy",
+                              f"积分购买订阅 - {plan.name}", f"subscription_points:{order_id}")
+            except InsufficientPoints:
+                db.rollback()
+                raise HTTPException(status_code=400, detail=f"积分不足（需要 {points_cost}）")
             sub = _grant_subscription(db, current_user, plan, plan.duration_days, "points_purchase", f"subscription_points:{order_id}")
             order = models.SubscriptionOrder(
                 order_id=order_id, user_id=current_user.id,
@@ -1615,15 +1663,21 @@ def transfer_points_core(db: Session, sender: models.WebUser, recipient_username
 
     ref_id = f"transfer:{sender.id}:{recipient.id}:{int(datetime.now().timestamp())}"
 
-    new_balance = _add_points(
-        db, sender, -amount, "transfer_out",
-        f"转账给 {recipient.username}（{amount} 积分）", ref_id=ref_id,
-    )
-    if fee > 0:
-        new_balance = _add_points(
-            db, sender, -fee, "transfer_fee",
-            f"转账手续费 {fee} 积分（{fee_pct}%）", ref_id=ref_id,
+    # 原子条件扣减（本金 + 手续费）：上面的余额检查读的是 ORM 里的旧值，只用于友好提示；
+    # 并发两笔转账都会通过它，真正的「够不够」必须由 UPDATE ... WHERE points >= x 判定
+    try:
+        new_balance = _spend_points(
+            db, sender, amount, "transfer_out",
+            f"转账给 {recipient.username}（{amount} 积分）", ref_id=ref_id,
         )
+        if fee > 0:
+            new_balance = _spend_points(
+                db, sender, fee, "transfer_fee",
+                f"转账手续费 {fee} 积分（{fee_pct}%）", ref_id=ref_id,
+            )
+    except InsufficientPoints:
+        db.rollback()
+        raise ValueError(f"积分不足，需要 {need} 分")
     _add_points(
         db, recipient, amount, "transfer_in",
         f"收到 {sender.username} 的转账（{amount} 积分）", ref_id=ref_id,

@@ -13,12 +13,16 @@ logger = logging.getLogger(__name__)
 _UPDATE_QUEUE: queue.Queue = queue.Queue(maxsize=1000)
 _EXECUTOR: ThreadPoolExecutor | None = None
 
+# getUpdates offset 持久化键（SystemConfig）
+_OFFSET_KEY = "tg_bot_update_offset"
+
 
 def _get_offset(db) -> int:
     """从 SystemConfig 读取 offset。"""
     from backend.integrations import store
     try:
-        return int(store.get_value(db, "tg_bot_update_offset", "0") or "0")
+        # 直读 DB（不走 get_value 的 TTL 热缓存），避免读到旧 offset 重放 update
+        return int(store.read_value(db, _OFFSET_KEY, "0") or "0")
     except (ValueError, TypeError):
         return 0
 
@@ -28,6 +32,8 @@ def _save_offset(db, offset: int) -> None:
     from backend.integrations import store
     # 注意：store 只有 write_values，没有 set_value
     store.write_values(db, {_OFFSET_KEY: str(offset)})
+    # write_values 不提交：这里必须自己 commit，否则 close 时回滚，offset 永不推进
+    db.commit()
 
 
 def _poll_once(token: str, offset: int, timeout: int = 30) -> list:

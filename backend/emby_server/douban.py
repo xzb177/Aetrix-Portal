@@ -290,4 +290,21 @@ def name_matches(local: str, douban_name: str) -> bool:
     return bool(not has_cjk(a)) and b.lower().endswith(" " + a.lower())
 
 
+def display_name(douban_name: str) -> str:
+    """豆瓣演员名「嘉羿 Jia Yi」→ 库里显示用的「嘉羿」（只去掉尾部的外文名）。
+
+    纯外文名（无 CJK）原样返回。
+    """
+    name = (douban_name or "").strip()
+    if not has_cjk(name):
+        return name
+    parts = name.split()
+    keep: list[str] = []
+    for tok in parts:
+        if keep and not has_cjk(tok):
+            break
+        keep.append(tok)
+    return " ".join(keep) or name
+
+
 client = DoubanClient()

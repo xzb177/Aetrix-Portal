@@ -544,3 +544,63 @@ def test_changes_token_url_is_start_page_token():
          mock.patch.object(drive_changes, "_api_get", side_effect=fake_api):
         drive_changes.get_start_page_token("DRIVE123")
     assert captured == [drive_changes.CHANGES_TOKEN_URL]
+
+
+# ---------------------------------------------------------------------------
+# page token 只在映射+入队成功后推进（失败不丢 changes）
+# ---------------------------------------------------------------------------
+
+def _poll_with(map_side_effect=None, trigger_ok=True, drives=None):
+    db = mock.Mock()
+    saved = []
+    drives = drives or {"0AAA": ["MP"]}
+    changes = [{"fileId": "f1", "file": {"name": "a.mkv", "parents": ["p"]}}]
+    with mock.patch.object(drive_changes, "discover_drives", return_value=drives), \
+         mock.patch.object(drive_changes, "_get_page_token", return_value="old"), \
+         mock.patch.object(drive_changes, "list_changes",
+                           return_value=(changes, "new")), \
+         mock.patch.object(drive_changes, "map_changes_to_libraries",
+                           side_effect=map_side_effect,
+                           return_value={1: {"/mnt/mp/x"}}), \
+         mock.patch.object(drive_changes, "_trigger_scan", return_value=trigger_ok), \
+         mock.patch.object(drive_changes, "_save_page_token",
+                           side_effect=lambda _db, did, t: saved.append((did, t))), \
+         mock.patch("backend.emby_server.change_watcher.record_chase_run"), \
+         mock.patch("backend.database.SessionLocal", return_value=db):
+        for did in drives:
+            drive_changes._dead_drives.pop(did, None)
+        stats = drive_changes.poll_once()
+    return saved, stats
+
+
+def test_poll_once_saves_token_after_successful_enqueue():
+    saved, stats = _poll_with()
+    assert saved == [("0AAA", "new")]
+    assert stats["errors"] == 0
+
+
+def test_poll_once_does_not_advance_token_when_mapping_fails():
+    saved, stats = _poll_with(map_side_effect=RuntimeError("no token"),
+                              drives={"0AAA": ["MP"], "0BBB": ["paul"]})
+    assert saved == []            # 两个盘都没推进
+    assert stats["drives"] == 2   # 第一个盘失败不中断第二个盘
+    assert stats["errors"] == 2
+
+
+def test_poll_once_does_not_advance_token_when_enqueue_fails():
+    saved, stats = _poll_with(trigger_ok=False)
+    assert saved == []
+    assert stats["errors"] == 1
+
+
+def test_map_changes_raises_without_token():
+    db = mock.Mock()
+    with mock.patch.object(drive_changes, "_library_drive_prefixes",
+                           return_value=[(1, "0AAA", "/x")]), \
+         mock.patch.object(drive_changes, "_library_fs_prefixes",
+                           return_value={(1, "/x"): "/mnt/mp/x"}), \
+         mock.patch.object(drive_changes, "_get_token", return_value=None):
+        import pytest
+        with pytest.raises(RuntimeError):
+            drive_changes.map_changes_to_libraries(
+                db, "0AAA", [{"fileId": "f", "file": {"name": "a.mkv"}}])

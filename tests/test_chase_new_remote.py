@@ -91,7 +91,7 @@ def _install_tree(monkeypatch, tree: dict, calls: list):
 
 def _backdate_snapshot(db, hours=2):
     """把快照时间拨到 N 小时前，绕过「每源每小时一次」的门控。"""
-    st = db.get(em.ChaseSourceState, "mount://3")
+    st = db.get(em.ChaseSourceState, "mount://3/MP2")
     assert st is not None and st.last_snapshot_at is not None
     st.last_snapshot_at = datetime.now(timezone.utc) - timedelta(hours=hours)
     db.commit()
@@ -138,7 +138,7 @@ def test_remote_baseline_builds_silently(db, monkeypatch):
     rows = db.query(em.ChaseFileSnapshot).filter(
         em.ChaseFileSnapshot.library_id == lib.id).all()
     assert len(rows) == 2
-    st = db.get(em.ChaseSourceState, "mount://3")
+    st = db.get(em.ChaseSourceState, "mount://3/MP2")
     assert st is not None and st.last_snapshot_at is not None
     assert st.consec_failures == 0
 
@@ -367,10 +367,37 @@ def test_chase_new_goes_through_public_channel(db, monkeypatch):
     after_first = len(calls)
     assert after_first == 1, calls
     # 绕过 hourly 门控，但**不清目录缓存**（缓存还在 TTL 内）
-    st = db.get(em.ChaseSourceState, "mount://3")
+    st = db.get(em.ChaseSourceState, "mount://3/MP2")
     st.last_snapshot_at = datetime.now(timezone.utc) - timedelta(hours=2)
     db.commit()
 
     cw._find_new_videos_remote(db, lib.id, 3, "/MP2")
 
     assert len(calls) == after_first, calls
+
+
+def test_two_libraries_on_same_mount_both_get_snapshotted(db, monkeypatch):
+    """同一挂载（生产全部库都在 mount://3 下）上的第二个库不能被第一个库的
+    「每源每小时一次」门控挡住——否则只有第一个库能追到新片。"""
+    now = datetime.now(timezone.utc).timestamp()
+    _mount(db)
+    lib_a = _lib(db)
+    lib_b = em.Library(guid="g-chase-remote-b", name="测试库B",
+                       collection_type="movies", paths="mount://3/TV")
+    db.add(lib_b)
+    db.commit()
+    tree = {
+        "MP2": [{"Path": "MP2/a.mkv", "Name": "a.mkv", "IsDir": False,
+                 "ModTime": _iso(now - 60), "Size": 1}],
+        "TV": [{"Path": "TV/b.mkv", "Name": "b.mkv", "IsDir": False,
+                "ModTime": _iso(now - 60), "Size": 1}],
+    }
+    calls: list[str] = []
+    _install_tree(monkeypatch, tree, calls)
+
+    _, n_a = cw._find_new_videos_remote(db, lib_a.id, 3, "/MP2")
+    _, n_b = cw._find_new_videos_remote(db, lib_b.id, 3, "/TV")
+
+    assert n_a == 1
+    assert n_b == 1, "同挂载第二个库被第一个库的快照门控跳过了"
+    assert "TV" in calls

@@ -15,7 +15,7 @@
 """
 
 import logging
-import random
+import secrets
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -135,7 +135,7 @@ def generate_bind_code(db: Session, user: models.WebUser) -> dict:
         models.TgBindCode.user_id == user.id,
         models.TgBindCode.used_at.is_(None),
     ).update({models.TgBindCode.used_at: now}, synchronize_session=False)
-    code = str(random.randint(100000, 999999))
+    code = str(100000 + secrets.randbelow(900000))  # CSPRNG，不可预测
     db.add(models.TgBindCode(
         user_id=user.id,
         code=code,

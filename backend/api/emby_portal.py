@@ -194,12 +194,20 @@ def captcha_config(request: Request, db: Session = Depends(get_db)):
     return captcha.widget_info(db)
 
 
+def _normalize_registration_mode(raw) -> str:
+    """注册模式归一：未配置 → open；open/closed 原样；其余（含已下线的 code）→ closed。"""
+    value = (raw or "").strip().lower()
+    if not value:
+        return "open"
+    return value if value in ("open", "closed") else "closed"
+
+
 @auth_router.get("/register-config")
 def register_config(db: Session = Depends(get_db)):
     """公开：注册页需要的开关状态（未登录可调）。
 
     前端据此决定显示/隐藏邀请码输入框、是否关闭注册：
-    - registration_mode: open=开放注册 / closed=关闭注册（code 模式已下线，历史值归一为 open）
+    - registration_mode: open=开放注册 / closed=关闭注册（code 模式已下线，历史值/未知值归一为 closed）
     - invitation_enabled: 邀请码功能开关
     """
     from backend.api.invitation import get_invite_config
@@ -209,9 +217,7 @@ def register_config(db: Session = Depends(get_db)):
         .filter(models.SystemConfig.key == "registration_mode")
         .first()
     )
-    mode = row.value if row and row.value else "open"
-    if mode not in ("open", "closed"):
-        mode = "open"  # code 模式已删除：历史残留值按开放注册处理
+    mode = _normalize_registration_mode(row.value if row else None)
     return {
         "registration_mode": mode,
         "invitation_enabled": get_invite_config(db)["enabled"],
@@ -287,12 +293,14 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
 
     # ===== 注册模式开关 =====
     # open: 开放注册 / closed: 关闭注册
-    # 「code」（注册码门禁）已于 v2.7.x 下线：DB 里残留的 "code" 值一律按 open 处理，
+    # 「code」（注册码门禁）已于 v2.7.x 下线。DB 里残留的 "code"（及任何未知值）
+    # 一律按 closed 处理（fail-closed）：管理员当初设 code 是为了「不对外开放」，
+    # 升级后不能静默变成开放注册，需管理员在后台显式改成 open。
     # 卡码体系（钱包/个人中心核销注册码/续期码/白名单码）不受影响。
     mode_config = db.query(models.SystemConfig).filter(
         models.SystemConfig.key == "registration_mode"
     ).first()
-    reg_mode = mode_config.value if mode_config else "open"
+    reg_mode = _normalize_registration_mode(mode_config.value if mode_config else None)
 
     if reg_mode == "closed":
         closed_msg_config = db.query(models.SystemConfig).filter(
@@ -303,10 +311,6 @@ def register(request: Request, req: RegisterRequest, db: Session = Depends(get_d
             detail=(closed_msg_config.value if closed_msg_config and closed_msg_config.value
                     else "当前未开放注册"),
         )
-    if reg_mode == "code":
-        # 已下线的值，兼容 DB 残留：按 open 处理（见上方注释）
-        reg_mode = "open"
-
     if req.email:
         email = req.email.strip()
         if "@" not in email:

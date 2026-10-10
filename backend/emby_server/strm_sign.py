@@ -138,7 +138,11 @@ def needs_refresh(content: str, db: Session | None = None) -> bool:
     if status == "legacy":
         return True
     if status != "ok":
-        return False
+        # 签名本身有效、只是过期了 → 必须重签。以前 bad 一律不碰：刷新任务
+        # 只要错过一次窗口（停机/重启超过剩余有效期、janitor 节拍抖动、或 TTL
+        # 配得比 50 分钟刷新间隔还短），所有 .strm 就永久变成 bad，全库拒播且
+        # 永远不会自愈。被篡改（HMAC 不符）的仍然不碰。
+        return _expired_but_authentic(content)
     try:
         from backend.emby_server.mounts import strm_url
 
@@ -147,3 +151,24 @@ def needs_refresh(content: str, db: Session | None = None) -> bool:
     except Exception:
         return False
     return (exp - time.time()) < REFRESH_THRESHOLD_SECONDS
+
+
+def _expired_but_authentic(content: str) -> bool:
+    """签名参数齐全、HMAC 比对通过、但 exp 已过期（= 我们自己签过的旧链接）。"""
+    try:
+        from backend.emby_server.mounts import strm_url
+
+        url = strm_url(content)
+        if not url:
+            return False
+        query = parse_qs(urlsplit(url).query, keep_blank_values=True)
+        exp_raw = query.get(SIG_PARAM_EXP, [None])[0]
+        sig_raw = query.get(SIG_PARAM_SIG, [None])[0]
+        if exp_raw is None or sig_raw is None:
+            return False
+        exp = int(exp_raw)
+        if exp > int(time.time()):
+            return False
+        return hmac.compare_digest(_hmac_sig(strip_sig_params(url), exp), sig_raw)
+    except Exception:
+        return False

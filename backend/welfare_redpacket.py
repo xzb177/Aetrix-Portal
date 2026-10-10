@@ -92,10 +92,16 @@ def send_packet(
         raise ValueError(f"积分不足，需要 {need} 分，当前 {balance} 分")
 
     # 扣分：红包本体 + 手续费（分开记账）
-    economy._add_points(db, sender, -total_amount, "redpacket", f"发出红包 {total_amount} 分")
-    if fee > 0:
-        economy._add_points(
-            db, sender, -fee, "redpacket_fee", f"红包手续费 {fee} 分（{fee_pct}%）")
+    # 原子条件扣减：上面的余额检查读的是 ORM 内存旧值，并发连发多个红包都能通过它；
+    # 「够不够」交给 UPDATE ... WHERE points >= x，扣不到整笔回滚（防双花/余额变负）
+    try:
+        economy._spend_points(db, sender, total_amount, "redpacket", f"发出红包 {total_amount} 分")
+        if fee > 0:
+            economy._spend_points(
+                db, sender, fee, "redpacket_fee", f"红包手续费 {fee} 分（{fee_pct}%）")
+    except economy.InsufficientPoints:
+        db.rollback()
+        raise ValueError(f"积分不足，需要 {need} 分")
 
     packet = models.RedPacket(
         sender_id=sender.id,
