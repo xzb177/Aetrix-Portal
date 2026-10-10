@@ -115,14 +115,11 @@ export interface PlanRow {
   realm_name?: string
 }
 
-/** 套餐清单（只取启用中的，供授予订阅下拉用）；`realm_id=0` = 全部服，不传 = 当前服 */
+/** 套餐清单；`realm_id=0` = 全部服，不传 = 当前服 */
 export const fetchPlans = (realm_id?: number) =>
   get<{ plans: PlanRow[]; realm_id: number | null; active_realm_id: number }>(
-    '/economy/plans',
-    {
-      ...(realm_id === undefined ? {} : { realm_id }),
-      only_active: true,
-    }
+    '/plans',
+    realm_id === undefined ? undefined : { realm_id }
   )
 
 export const grantSubscription = (userId: number, data: { plan_id: number; duration_days: number }) =>
@@ -1137,6 +1134,15 @@ export interface MetaSourcesConfig {
 }
 
 export const fetchMetaSources = () => get<MetaSourcesConfig>(`${E}/scrape/meta-sources`)
+
+/** 豆瓣优先配置：中文标题先走豆瓣（总开关默认开） */
+export interface DoubanConfig {
+  enabled: boolean
+  min_interval: number
+}
+export const fetchDoubanConfig = () => get<DoubanConfig>(`${E}/scrape/douban-config`)
+export const saveDoubanConfig = (enabled: boolean, min_interval: number) =>
+  put<DoubanConfig>(`${E}/scrape/douban-config?enabled=${enabled}&min_interval=${min_interval}`)
 
 /** 保存总开关 / 中文优先 / 顺序 / 逐源开关 / 逐源限速（**不动密钥池**） */
 export const saveMetaSources = (data: {

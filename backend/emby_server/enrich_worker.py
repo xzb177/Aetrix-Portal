@@ -387,7 +387,37 @@ def _enrich_fetch(item: Any, holder: Optional[dict] = None,
         logger.debug("补全 %s 无 file_path（容器条目），仅走 TMDB：%s",
                      item_type, item.name)
 
-    # 3. TMDB（NFO 有 tmdb_id 就不搜，只按需取详情补图/补缺）
+    # 2.5 豆瓣优先（中文标题）：TMDB 对中文剧集/综艺收录偏少，
+    # 短中文剧名 Tier1 LCS>=6 永远达不到。中文标题先走豆瓣，
+    # 搜中则取详情写库；没搜中则回退到 TMDB。非中文标题直接走 TMDB。
+    if (kind in ("series", "movie")
+            and not (nfo_data and nfo_data.get("tmdb_id"))
+            and not getattr(item, "tmdb_id", None)):
+        try:
+            from backend.emby_server import douban as _dbn
+            _cfg2 = SessionLocal()
+            try:
+                _dbn_on = _dbn.enabled(_cfg2)
+                _dbn_iv = _dbn.min_interval(_cfg2) if _dbn_on else 0.0
+            finally:
+                _cfg2.close()
+            if _dbn_on and _dbn.has_cjk(item.name or ""):
+                _dbn.client._interval = _dbn_iv
+                _dh = _dbn.client.search(
+                    item.name or "", item.production_year, kind)
+                if _dh and _dh.get("id"):
+                    result["douban_first_hit"] = _dh
+                    _dd = _dbn.client.get_details(_dh["id"])
+                    if _dd:
+                        result["douban_details"] = _dd
+                    progress.note_stage("enrich_douban_first")
+                    logger.info("[douban] 优先命中 %r -> %s",
+                                item.name, _dh.get("title"))
+        except Exception as exc:
+            logger.debug("豆瓣优先搜索失败 %s: %s", item.name, exc)
+
+    # 3. TMDB（NFO 有 tmdb_id 就不搜，只按需取详情补图/补缺；
+    # 豆瓣优先已命中的跳过 TMDB 搜索）
     needs_repair = bool(getattr(item, "repair_requested_at", None))
     try:
         if nfo_data and nfo_data.get("tmdb_id"):
@@ -401,7 +431,8 @@ def _enrich_fetch(item: Any, holder: Optional[dict] = None,
                 _hit, details = _sc._tmdb_work(
                     False, "", None, kind, tmdb_id, True)
                 result["tmdb_details"] = details
-        elif tmdb_client.configured and kind in ("series", "movie"):
+        elif (tmdb_client.configured and kind in ("series", "movie")
+              and not result.get("douban_first_hit")):
             # 处方 12・零 API 别名匹配：同一部剧已在库里（换文件名/换译名重扫）
             # 时，1 次 details 请求替代 4~5 次候选搜索——且绝不写错名字
             # （只补 id/图/别名，名字以库里那份为准）。
@@ -688,6 +719,41 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     # 补全完成，此后 _claim_batch 只捞 pending，永远不会再重试——于是
     # series 3263 条里 464 条永久缺 TMDB，且没有任何重试迹象。
     # 现在：核心元数据缺失就退回 pending（可重试），刮到了才 done。
+    # 豆瓣优先命中落库（中文标题主数据源）：search 给标题/年份/海报，
+    # details 给简介/评分。只补缺项，不覆盖 NFO/TMDB 已有数据。
+    _dbn_first = fetched.get("douban_first_hit")
+    if _dbn_first:
+        try:
+            _dbn_details = fetched.get("douban_details") or {}
+            if _dbn_first.get("title") and not (item.overview or "").strip() \
+                    and not item.poster_path and not item.primary_image_url:
+                from backend.emby_server.tmdb import clean_title as _ct
+                _n = _ct(_dbn_first["title"])
+                if _n:
+                    item.name = _n
+            if _dbn_first.get("year") and not item.production_year:
+                try:
+                    item.production_year = int(_dbn_first["year"])
+                except (TypeError, ValueError):
+                    pass
+            if _dbn_details.get("overview") and not (item.overview or "").strip():
+                item.overview = _dbn_details["overview"][:2000]
+            if _dbn_details.get("rating"):
+                try:
+                    item.community_rating = float(_dbn_details["rating"])
+                except (TypeError, ValueError):
+                    pass
+            if _dbn_first.get("image") and not item.poster_path \
+                    and not item.primary_image_url:
+                from backend.emby_server.tmdb import _set_image as _si
+                _si(item, "Primary", _dbn_first["image"])
+            if not item.last_scraped_at:
+                item.last_scraped_at = datetime.now()
+            item.metadata_source = "douban"
+        except Exception as exc:
+            logger.debug("豆瓣优先落库失败 %s: %s", getattr(item, "name", ""), exc)
+            _dbn_first = None
+
     # 豆瓣兜底结果落库（只在没有 TMDB 命中时）
     douban_hit = fetched.get("douban_hit")
     alt_hit = douban_hit
@@ -728,7 +794,8 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
         if not item.metadata_source or item.metadata_source == "none":
             item.metadata_source = "inherit"
     elif kind in ("series", "movie"):
-        if tmdb_client.configured and not item.tmdb_id and not alt_hit and not multi_fields:
+        if (tmdb_client.configured and not item.tmdb_id and not alt_hit
+                and not multi_fields and not _dbn_first):
             # 处方 5（终态化）：search **真的跑过**且无高置信命中 =「搜过、没有」——
             # 这批条目在旧实现里走 5 次重试 × 每 60~960 秒重打 4~5 个候选搜索，
             # 结果必然是空：积压数字永不下降，白白烧掉约 7 万次 TMDB 请求。

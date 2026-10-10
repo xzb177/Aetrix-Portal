@@ -1492,3 +1492,44 @@ def search_tmdb_candidates(
     if year:
         candidates = [c for c in candidates if c["year"] == str(year)]
     return {"candidates": candidates}
+
+
+# ==================== 豆瓣优先（中文内容主数据源） ====================
+
+@admin_emby_router.get("/scrape/douban-config")
+def get_douban_config(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """读取豆瓣优先配置：总开关（默认开）+ 限速（秒/次）"""
+    from backend.emby_server import douban as _dbn
+    return {
+        "enabled": _dbn.enabled(db),
+        "min_interval": _dbn.min_interval(db),
+    }
+
+
+@admin_emby_router.put("/scrape/douban-config")
+def save_douban_config(
+    enabled: bool = True,
+    min_interval: float = 1.0,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """保存豆瓣优先配置（保存即热生效）"""
+    from backend.emby_server import douban as _dbn
+    from backend.integrations import store
+    iv = max(0.0, float(min_interval or 0))
+    store.write_values(
+        db,
+        {
+            _dbn.DOUBAN_ENABLED_KEY: "1" if enabled else "0",
+            _dbn.DOUBAN_RATE_KEY: str(iv),
+        },
+        {
+            _dbn.DOUBAN_ENABLED_KEY: "豆瓣优先总开关（中文标题先走豆瓣）",
+            _dbn.DOUBAN_RATE_KEY: "豆瓣请求最小间隔秒数",
+        },
+    )
+    db.commit()
+    return {"success": True, "enabled": enabled, "min_interval": iv}
