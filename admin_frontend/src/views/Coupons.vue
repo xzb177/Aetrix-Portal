@@ -405,6 +405,14 @@ onMounted(() => {
       </template>
     </PageHeader>
 
+    <el-alert
+      class="mb-4"
+      type="info"
+      :closable="false"
+      show-icon
+      title="分工说明：优惠券在下单支付时直接抵扣（钱仍走支付网关）；兑换码（discount 型）是用户兑换后生成一笔抵扣额度，存在钱包里慢慢用。"
+    />
+
     <section class="stat-row" aria-label="优惠券概况">
       <StatTile label="优惠券" :value="summary.total" suffix="张" :icon="Tickets" hint="当前筛选范围内" />
       <StatTile label="可用" :value="summary.usable" :icon="CircleCheck" :tone="summary.usable > 0 ? 'ok' : 'plain'" />

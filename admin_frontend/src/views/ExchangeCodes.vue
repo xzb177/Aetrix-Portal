@@ -170,6 +170,14 @@ onMounted(load)
       </template>
     </PageHeader>
 
+    <el-alert
+      class="mb-4"
+      type="info"
+      :closable="false"
+      show-icon
+      title="分工说明：兑换码兑换后生成奖励（积分 / 订阅时长 / 抵扣额度）；和「优惠券」不同——优惠券是在下单支付那一刻直接抵扣的。"
+    />
+
     <div class="stat-row">
       <StatTile label="兑换码" :value="codes.length" :icon="Ticket" hint="最近 200 个以内" />
       <StatTile label="启用中" :value="activeCount" :suffix="`/ ${codes.length}`" :icon="CheckCircle2" hint="停用的码不能再核销" />

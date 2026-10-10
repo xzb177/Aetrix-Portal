@@ -537,8 +537,18 @@ onMounted(reloadAll)
       <StatTile label="本页返利合计" :value="rebateTotal" :icon="HandCoins" hint="当前积分流水页内" />
     </section>
 
+    <!-- 页内锚点导航：5 个区块太长，点一下直达 -->
+    <nav class="invite-anchors" aria-label="本页导航">
+      <a href="#invite-codes">邀请码</a>
+      <a href="#invite-records">邀请记录</a>
+      <a href="#invite-logs">积分流水</a>
+      <a href="#invite-audit">流水审计</a>
+      <a href="#invite-promo">推广奖励</a>
+    </nav>
+
     <!-- 邀请码管理（v2.44.0）：筛选在左、批量生成在右 -->
     <SectionCard
+      id="invite-codes"
       title="邀请码"
       :icon="QrCode"
       :meta="`共 ${invSummary.total ?? 0} 张 · 可用 ${invSummary.active ?? 0} · 已用 ${invSummary.uses ?? 0} 次`"
@@ -614,7 +624,7 @@ onMounted(reloadAll)
 
     <div class="ledger-grid">
       <!-- 邀请记录 -->
-      <SectionCard title="邀请记录" :icon="UserPlus" :meta="`最新 ${invitations.length} 条`" flush>
+      <SectionCard id="invite-records" title="邀请记录" :icon="UserPlus" :meta="`最新 ${invitations.length} 条`" flush>
         <DataTable class="flush-table" :rows="invitations" :columns="inviteColumns" :loading="loading" empty="暂无邀请记录">
           <template #cell-inviter="{ row }">
             <span class="user-name">{{ row.inviter }}</span>
@@ -631,7 +641,7 @@ onMounted(reloadAll)
       </SectionCard>
 
       <!-- 积分流水：类型筛选放在卡片标题行右侧，分页在底栏 -->
-      <SectionCard title="积分流水" :icon="History" :meta="`共 ${logTotal} 条`" flush>
+      <SectionCard id="invite-logs" title="积分流水" :icon="History" :meta="`共 ${logTotal} 条`" flush>
         <template #actions>
           <el-select
             v-model="logTypeFilter"
@@ -689,6 +699,7 @@ onMounted(reloadAll)
 
     <!-- C3 流水审计：hash 链防篡改 -->
     <SectionCard
+      id="invite-audit"
       title="流水审计"
       :icon="ShieldCheck"
       description="每笔积分流水写入时链接上一条的 hash，形成防篡改链。关闭后新流水不再写 hash（历史记录不受影响）；核验会逐条重算，发现篡改或断链即报警。"
@@ -736,6 +747,7 @@ onMounted(reloadAll)
 
     <!-- 推广奖励（v2.44.0）：开关与阈值在系统设置里也能改，两处同一份 -->
     <SectionCard
+      id="invite-promo"
       :icon="Megaphone"
       description="邀请成功后在双向积分之外「另发」一笔，类型与数值全走配置。默认关闭——不手动打开就不会发；也可在「系统设置 → 邀请返利」里改。"
       flush
@@ -976,6 +988,39 @@ onMounted(reloadAll)
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 12px;
+}
+
+/* ---------- 页内锚点导航 ---------- */
+.invite-page {
+  scroll-behavior: smooth;
+}
+
+.invite-anchors {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 16px;
+}
+
+.invite-anchors a {
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--au-border);
+  color: var(--au-text-3);
+  background: var(--au-surface);
+  text-decoration: none;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.invite-anchors a:hover {
+  border-color: var(--au-accent);
+  color: var(--au-text);
+}
+
+.invite-page .au-section[id] {
+  scroll-margin-top: 76px;
 }
 
 /* ---------- 工具条：筛选在左、动作在右 ---------- */
