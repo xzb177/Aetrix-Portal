@@ -675,21 +675,21 @@ function onResumeThumbError(card: ResumeCard) {
   }
 }
 
-/** Hero 眉题：有今日入库叫「今日新片」，否则「本周新片」；没有片单就只写站点氛围 */
+/** Hero 眉题：有片单时只写「今晚放映 · 今日新片」——片名是 H1 的主角，眉题不再重复 */
 const heroEyebrow = computed(() => {
   if (!heroItem.value) return '今晚放映'
-  return `${recentHasToday.value ? '今日新片' : '本周新片'} · ${recentTitle(heroItem.value)}`
+  return `今晚放映 · ${recentHasToday.value ? '今日新片' : '本周新片'}`
 })
 
-/** 问候语加长版（桌面端）：从陈述变成邀约——"夜深了" → "夜深了，来部电影？"。
- *  移动端窄屏仍用短版（模板里两个 span 按断点二选一，和票根卡 stat-short/stat-desc 同一套路） */
-const greetingLong = computed(() => {
+/** 问候语拆成 lead + tail：名字插在中间才顺——"夜深了，影迷，今晚看什么？"
+ *  （直接拼 "夜深了，来部电影？，影迷" 会冒出 "?，" 这种怪标点） */
+const greetingParts = computed(() => {
   const hour = new Date().getHours()
-  if (hour < 6) return '夜深了，来部电影？'
-  if (hour < 12) return '上午好'
-  if (hour < 14) return '中午好，吃完饭看点什么'
-  if (hour < 18) return '下午好'
-  return '晚上好，今晚看什么'
+  if (hour < 6) return { lead: '夜深了', tail: '，今晚看什么？' }
+  if (hour < 12) return { lead: '上午好', tail: '' }
+  if (hour < 14) return { lead: '中午好', tail: '，吃完饭看点什么' }
+  if (hour < 18) return { lead: '下午好', tail: '' }
+  return { lead: '晚上好', tail: '，今晚看什么？' }
 })
 
 /** Hero 主角：和 heroImage 同一条片子（近 7 天入库里第一条带背景图的）——
@@ -779,7 +779,7 @@ onActivated(() => {
         <h1 v-else class="hero-title hero-enter d2">{{ greeting }}，{{ user?.username || '影迷' }}</h1>
         <p v-if="heroFeatureTitle && heroMeta" class="hero-meta hero-enter d3">{{ heroMeta }}</p>
         <p v-if="heroFeatureTitle" class="hero-whisper hero-enter d3">
-          <span class="whisper-long">{{ greetingLong }}，{{ user?.username || '影迷' }}</span><span class="whisper-short">{{ greeting }}，{{ user?.username || '影迷' }}</span>
+          <span class="whisper-long">{{ greetingParts.lead }}，{{ user?.username || '影迷' }}{{ greetingParts.tail }}</span><span class="whisper-short">{{ greeting }}，{{ user?.username || '影迷' }}</span>
         </p>
         <p class="hero-status hero-enter d4">
           <span v-if="isMember" class="hero-tag">
