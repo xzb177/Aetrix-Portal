@@ -166,6 +166,16 @@ def dispatch(db, update: dict) -> None:
             sender.send_message(db, chat_id, "未知命令，发送 /help 查看可用命令")
             return
 
+        # /redeem 在群里发 = 把兑换码公开给全群：拒绝执行，尽量删掉原消息（没权限就算了），提示私聊
+        if cmd == "/redeem" and in_group:
+            try:
+                sender.delete_message(db, chat_id, msg.get("message_id"))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("删除群内 /redeem 消息失败（忽略）: %s", exc)
+            if _group_allow(chat_id, group_limit):
+                sender.send_message(db, chat_id, "🔒 为保护兑换码，请私聊我发送 /redeem 兑换码，群里不执行兑换")
+            return
+
         # 群级限流：超限静默丢弃，避免刷屏
         if in_group and not _group_allow(chat_id, group_limit):
             return

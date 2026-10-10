@@ -353,6 +353,8 @@ export interface HotlinkConfigPayload {
 }
 
 export interface HotlinkConfig extends HotlinkConfigPayload {
+  /** .strm TTL 可保存下限（= 2×后端维护间隔，默认 1200） */
+  strm_sig_ttl_min?: number
   defaults: { enabled: boolean; play_sign_ttl: number; strm_sig_ttl: number }
 }
 

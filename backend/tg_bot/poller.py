@@ -15,6 +15,35 @@ _EXECUTOR: ThreadPoolExecutor | None = None
 
 # getUpdates offset 持久化键（SystemConfig）
 _OFFSET_KEY = "tg_bot_update_offset"
+# poller 心跳（SystemConfig，ISO 时间）：API 进程据此判断 poller 是否在跑，
+# 在跑时网页端绑定校验不得自己调 getUpdates（会与长轮询 409 冲突并抢走 update）
+HEARTBEAT_KEY = "tg_bot_poller_heartbeat"
+# 心跳新鲜度阈值：长轮询 30s + 请求超时 10s + 最大退避 300s，留余量
+HEARTBEAT_STALE_SECONDS = 360
+
+
+def _beat(db) -> None:
+    """写心跳（失败忽略，不影响轮询）。"""
+    from datetime import datetime
+    from backend.integrations import store
+    try:
+        store.write_values(db, {HEARTBEAT_KEY: datetime.now().isoformat()})
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.debug("tg poller heartbeat failed: %s", exc)
+
+
+def is_active(db) -> bool:
+    """poller 是否在跑（心跳在阈值内）。可在任意进程调用。"""
+    from datetime import datetime
+    from backend.integrations import store
+    raw = store.read_value(db, HEARTBEAT_KEY, "") or ""
+    try:
+        last = datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return False
+    return (datetime.now() - last).total_seconds() < HEARTBEAT_STALE_SECONDS
 
 
 def _get_offset(db) -> int:
@@ -60,14 +89,38 @@ def _worker_loop() -> None:
     while True:
         update = _UPDATE_QUEUE.get()
         if update is None:  # 退出信号
+            _UPDATE_QUEUE.task_done()
             break
-        db = SessionLocal()
+        db = None
         try:
+            db = SessionLocal()
             router.dispatch(db, update)
         except Exception as exc:  # noqa: BLE001
             logger.error("tg worker dispatch failed: %s", exc, exc_info=True)
         finally:
-            db.close()
+            if db is not None:
+                db.close()
+            # 必须 task_done：poller 靠 join() 等这一批处理完才推进 offset
+            _UPDATE_QUEUE.task_done()
+
+
+def _process_updates(updates: list, offset: int, save) -> int:
+    """入队一批 update，等它们全部处理完再保存 offset（at-least-once）。
+
+    以前入队即推进 offset：进程崩溃或队列满（put_nowait 直接丢弃）都会永久丢 update。
+    现在队列满就阻塞等待；全部 handler 跑完才 save。崩溃会重放这一批：
+    抢红包（uq_rpc_packet_user）、兑换码（uq_code_redemption_user）、群发言积分
+    （uq_chat_points_msg）、绑定码（used_at）有库级幂等；发红包 /redpacket 重放可能重复（待补）。
+    """
+    max_id = offset
+    for u in updates:
+        uid = u.get("update_id", 0)
+        if uid >= max_id:
+            max_id = uid + 1
+        _UPDATE_QUEUE.put(u)  # 阻塞：宁可慢，不丢
+    _UPDATE_QUEUE.join()
+    save(max_id)
+    return max_id
 
 
 def poll_forever() -> None:
@@ -99,6 +152,7 @@ def poll_forever() -> None:
                 time.sleep(60)
                 continue
             offset = _get_offset(db)
+            _beat(db)
         finally:
             db.close()
 
@@ -106,21 +160,15 @@ def poll_forever() -> None:
             updates = _poll_once(bot_token, offset, timeout=30)
             backoff = 5  # 成功后重置退避
             if updates:
-                max_id = offset
-                for u in updates:
-                    uid = u.get("update_id", 0)
-                    if uid >= max_id:
-                        max_id = uid + 1
+                def _persist(max_id: int) -> None:
+                    db2 = SessionLocal()
                     try:
-                        _UPDATE_QUEUE.put_nowait(u)
-                    except queue.Full:
-                        logger.warning("tg update queue full, dropping update %s", uid)
-                # 持久化 offset
-                db2 = SessionLocal()
-                try:
-                    _save_offset(db2, max_id)
-                finally:
-                    db2.close()
+                        _save_offset(db2, max_id)
+                    finally:
+                        db2.close()
+
+                # 处理完才持久化 offset（at-least-once）
+                _process_updates(updates, offset, _persist)
         except Exception as exc:  # noqa: BLE001
             logger.error("tg poll failed: %s, retry in %ss", exc, backoff)
             time.sleep(backoff)

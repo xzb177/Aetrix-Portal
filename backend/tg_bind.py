@@ -144,8 +144,41 @@ def generate_bind_code(db: Session, user: models.WebUser) -> dict:
     return {"code": code, "expires_in": CODE_TTL_SECONDS, "bot_username": get_bot_username(db)}
 
 
+def _latest_code_expired_by_attempts(db: Session, user: models.WebUser) -> bool:
+    """该用户最新的绑定码是否因全站猜错次数超限被作废（防分布式枚举）。"""
+    from backend.tg_bot.handlers import BIND_GLOBAL_FAIL_MAX
+
+    latest = (
+        db.query(models.TgBindCode)
+        .filter(models.TgBindCode.user_id == user.id)
+        .order_by(models.TgBindCode.id.desc())
+        .first()
+    )
+    return bool(
+        latest is not None
+        and latest.used_at is None
+        and (latest.fail_count or 0) >= BIND_GLOBAL_FAIL_MAX
+    )
+
+
+_CODE_EXPIRED_RESULT = {
+    "success": False,
+    "code_expired": True,
+    "message": "检测到大量异常绑定尝试，你的绑定码已失效，请重新生成绑定码后再发送给 Bot",
+}
+
+
 def verify_bind(db: Session, user: models.WebUser) -> dict:
     """用户给 Bot 发送绑定码后，调 getUpdates 扫码验证。成功则写 telegram_id。不 commit。"""
+    if not user.telegram_id and _latest_code_expired_by_attempts(db, user):
+        return dict(_CODE_EXPIRED_RESULT)
+    from backend.tg_bot import poller
+    if poller.is_active(db):
+        # Bot 长轮询在跑：绑定码由 poller 的绑定处理器消费并直接写库，
+        # 这里绝不能再调 getUpdates（Telegram 409 + 抢走 poller 的 update），只读库状态。
+        if user.telegram_id:
+            return {"success": True, "telegram_id": user.telegram_id}
+        return {"success": False, "message": "还没收到你发送的绑定码，请先私聊 Bot 发送 6 位数字码，几秒后再点验证"}
     token = tg_integration.token(db)
     if not token:
         raise ValueError("站点尚未配置 Telegram Bot，请联系管理员")

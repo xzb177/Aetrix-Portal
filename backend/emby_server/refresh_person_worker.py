@@ -236,10 +236,16 @@ def fill_from_douban(db, limit: int = None) -> int:
         _mark_tried(_tried_items, item.id)
         if not _dbn.has_cjk(item.name or ""):
             continue
-        hit = _dbn.client.search(item.name or "", item.production_year, item.item_type)
-        if not hit or not hit.get("id"):
-            continue
-        celebs = _dbn.client.get_celebrities(hit["id"])
+        try:
+            hit = _dbn.client.search(item.name or "", item.production_year, item.item_type)
+            if not hit or not hit.get("id"):
+                continue
+            celebs = _dbn.client.get_celebrities(hit["id"])
+        except _dbn.DoubanBannedError:
+            # 被封禁：本轮到此为止；本条不算试过，冷却后下一轮再补
+            with _tried_lock:
+                _tried_items.pop(item.id, None)
+            break
         if not celebs:
             continue
         rows = db.query(em.EmbyPerson).filter(em.EmbyPerson.item_id == item.id).all()

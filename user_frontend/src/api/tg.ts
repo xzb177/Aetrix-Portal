@@ -22,6 +22,6 @@ export interface TgBindCodeResp {
 export const tgApi = {
   status: () => api.get<never, TgBindStatus>('/api/user/telegram/status'),
   bindCode: () => api.post<never, TgBindCodeResp>('/api/user/telegram/bind-code'),
-  verify: () => api.post<never, { success: boolean; telegram_id?: number; message?: string }>('/api/user/telegram/verify'),
+  verify: () => api.post<never, { success: boolean; telegram_id?: number; message?: string; code_expired?: boolean }>('/api/user/telegram/verify'),
   unbind: () => api.delete<never, { success: boolean }>('/api/user/telegram/unbind'),
 }

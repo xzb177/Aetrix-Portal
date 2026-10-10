@@ -246,8 +246,10 @@ def ensure_sa_rotation(conf_path: str | Path,
     ``state_path`` 可指定轮换状态文件位置（默认与配置同目录的
     ``.sa_rotation.json``），测试时可传入临时路径。
 
-    返回 ``{"changed": bool, "mode": "rotated"|"single"|"none",
+    返回 ``{"changed": bool, "needs_remount": bool, "mode": "rotated"|"single"|"none",
     "warning": str|None, "sa_file": str|None}``。
+    ``needs_remount`` = 配置确实改了：本函数只改 rclone.conf，代码库没有应用内重挂
+    rclone 挂载的能力，调用方必须把"需重新挂载/重启 rclone 才生效"告诉操作者。
     只改 [remote] 里原来就配了 service_account_* 的节，不碰 OAuth 的节。
 
     注意：rclone 已移除内核目录轮换（service_account_file_path），本函数
@@ -258,8 +260,8 @@ def ensure_sa_rotation(conf_path: str | Path,
 
 
 def _ensure_sa_rotation_locked(conf_path, sa_dir, state_path) -> dict:
-    result: dict = {"changed": False, "mode": "none", "warning": None,
-                    "sa_file": None}
+    result: dict = {"changed": False, "needs_remount": False, "mode": "none",
+                    "warning": None, "sa_file": None}
     conf = Path(conf_path)
     if not conf.is_file():
         result["warning"] = f"rclone 配置不存在：{conf}"
@@ -301,6 +303,7 @@ def _ensure_sa_rotation_locked(conf_path, sa_dir, state_path) -> dict:
         with open(conf, "w", encoding="utf-8") as fh:
             parser.write(fh)
     result["changed"] = changed
+    result["needs_remount"] = changed
     return result
 
 

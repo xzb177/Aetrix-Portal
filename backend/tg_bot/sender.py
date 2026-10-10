@@ -73,6 +73,11 @@ def send_message(db, chat_id: int, text: str, reply_markup: dict | None = None) 
     return _call(db, "sendMessage", payload)
 
 
+def delete_message(db, chat_id: int, message_id: int) -> tuple[bool, str | None]:
+    """删除一条消息（群里需要 Bot 有删除权限；失败由调用方忽略）。"""
+    return _call(db, "deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+
+
 def edit_message_text(db, chat_id: int, message_id: int, text: str, reply_markup: dict | None = None) -> tuple[bool, str | None]:
     """
     原地编辑指定消息的文本与键盘（不重发新消息）

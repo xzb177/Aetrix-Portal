@@ -3,8 +3,8 @@
 定位
 ----
 .strm 是纯文本小文件，服务端 scanner/relay 读取其内容拿到 Drive 直链再代理播放。
-为防盗链，.strm 文件内容改为带签名的 URL，签名默认 1 小时过期；另有定时任务
-每 50 分钟刷新签名（本模块提供刷新判定）。
+为防盗链，.strm 文件内容改为带签名的 URL，签名默认 1 小时过期；janitor 定时刷新
+签名，节奏随 TTL 推导（见 refresh_threshold_seconds，本模块提供刷新判定）。
 
 格式
 ----
@@ -127,11 +127,24 @@ def verify_strm_url(content: str) -> tuple[str, str]:
         return "", "bad"
 
 
-def needs_refresh(content: str, db: Session | None = None) -> bool:
+def refresh_threshold_seconds(ttl_seconds: int, tick_seconds: int) -> int:
+    """重签阈值随 TTL 走：剩余有效期 < max(TTL/3, 2×tick) 就重签。
+
+    2×tick 保证"这一拍没赶上、下一拍还来得及"；TTL/3 让长 TTL 不必临期才刷。
+    阈值 ≥ TTL（TTL 配得过短）时等于每拍都重签——宁可多写也不让链接过期。
+    """
+    ttl = max(1, int(ttl_seconds))
+    tick = max(1, int(tick_seconds))
+    return max(ttl // 3, 2 * tick, REFRESH_THRESHOLD_SECONDS)
+
+
+def needs_refresh(content: str, db: Session | None = None,
+                  threshold_seconds: int | None = None) -> bool:
     """判断 .strm 内容是否需要刷新签名。
 
     legacy → True（补签名）；bad → False（坏的不碰，等人工处理）；
-    ok 且剩余有效期 < 600 秒 → True，否则 False。
+    ok 且剩余有效期 < threshold_seconds（缺省 600 秒；刷新任务传
+    refresh_threshold_seconds(TTL, tick)）→ True，否则 False。
     db 参数仅为与 sign_strm_url 保持同构签名而保留，校验逻辑本身不需要数据库。
     """
     _, status = verify_strm_url(content)
@@ -150,7 +163,8 @@ def needs_refresh(content: str, db: Session | None = None) -> bool:
         exp = int(parse_qs(urlsplit(url).query, keep_blank_values=True)[SIG_PARAM_EXP][0])
     except Exception:
         return False
-    return (exp - time.time()) < REFRESH_THRESHOLD_SECONDS
+    threshold = REFRESH_THRESHOLD_SECONDS if threshold_seconds is None else int(threshold_seconds)
+    return (exp - time.time()) < threshold
 
 
 def _expired_but_authentic(content: str) -> bool:

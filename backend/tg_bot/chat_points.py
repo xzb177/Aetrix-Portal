@@ -134,6 +134,8 @@ def handle_group_message(db: Session, update: dict[str, Any]) -> int:
         if recent:
             return 0
         cap = _to_int(cfg["chat_points_daily_cap"], 20)
+        # 锁用户行后再统计今日已得：并发多条消息都读到旧 earned 会绕过日上限
+        economy.lock_user_row(db, user.id)
         today = datetime.now().date()
         earned = db.query(
             func.coalesce(func.sum(models.ChatPointsLog.points), 0)

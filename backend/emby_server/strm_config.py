@@ -4,12 +4,13 @@
 .strm 是纯文本小文件，内容为视频直链 URL；生产环境用 docker-compose
 把宿主机 /opt/strm 挂到容器的 /strm（只读）。
 
-本模块把 .strm 相关配置做成 SystemConfig 可配置项（运行时一律热读，
-不读环境变量），共三项：
+本模块把 .strm 相关配置做成 SystemConfig 可配置项（运行时一律热读），共三项：
 
 - strm_enabled：.strm 功能总开关，默认 "true"（启用）；
 - strm_host_dir：宿主机 .strm 目录，默认 "/opt/strm"；
-- strm_container_path：容器内挂载点，默认 "/strm"。
+- strm_container_path：容器内挂载点。**全项目唯一事实源**是 container_path(db)：
+  后台配置 > 环境变量 STRM_CONTAINER_PATH（docker-compose 挂载的容器侧路径，
+  同一个变量）> "/strm"。扫描、判定、签名刷新一律走它，别处不许再读环境变量或写死 /strm。
 
 docker-compose 的环境变量只管容器启动时的挂载本身（挂载仍需在
 docker-compose 里声明），运行时"目录在哪"以后端这里的配置为准。
@@ -17,6 +18,8 @@ docker-compose 里声明），运行时"目录在哪"以后端这里的配置为
 """
 
 from __future__ import annotations
+
+import os
 
 from sqlalchemy.orm import Session
 
@@ -88,12 +91,20 @@ def host_dir(db: Session) -> str:
     )
 
 
+ENV_STRM_CONTAINER_PATH = "STRM_CONTAINER_PATH"
+
+
+def env_container_path() -> str:
+    """部署侧容器内挂载点：环境变量 STRM_CONTAINER_PATH（与 docker-compose 挂载同一个变量），
+    非法/未设回落 /strm。只给 container_path() 当兜底用。"""
+    return normalize_dir_path(os.getenv(ENV_STRM_CONTAINER_PATH, ""), DEFAULT_STRM_CONTAINER_PATH)
+
+
 def container_path(db: Session) -> str:
-    """热读 strm_container_path，归一化后回落默认值"""
-    return normalize_dir_path(
-        _raw(db, CONFIG_STRM_CONTAINER_PATH, DEFAULT_STRM_CONTAINER_PATH),
-        DEFAULT_STRM_CONTAINER_PATH,
-    )
+    """容器内 .strm 挂载点的唯一事实源：后台配置 > 环境变量 STRM_CONTAINER_PATH > /strm"""
+    fallback = env_container_path()
+    raw = _raw(db, CONFIG_STRM_CONTAINER_PATH, "") if db is not None else ""
+    return normalize_dir_path(raw, fallback)
 
 
 def is_strm_path(db: Session, path: str) -> bool:

@@ -71,7 +71,11 @@ async function rotate() {
   rotating.value = true
   try {
     const data = await rotateGDriveSa()
-    ElMessage.success(`已切换到 ${data.sa_file || '下一个账号'}`)
+    if (data.needs_remount) {
+      ElMessageBox.alert(data.remount_hint || '已改写 rclone 配置，需重新挂载 rclone 后才生效。', `已切换到 ${data.sa_file || '下一个账号'}（需重新挂载）`, { type: 'warning' }).catch(() => {})
+    } else {
+      ElMessage.success(`已切换到 ${data.sa_file || '下一个账号'}`)
+    }
     await load()
   } catch {
     // 拦截器已提示（例如 SA 目录不存在）

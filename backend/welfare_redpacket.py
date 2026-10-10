@@ -71,6 +71,8 @@ def send_packet(
     # 发送频率检查
     send_limit = _get_int_config(db, "redpacket_send_limit_7d", 20)
     if send_limit > 0:
+        # 锁发送方用户行后再计数，并发连发不能绕过 7 天次数上限
+        economy.lock_user_row(db, sender.id)
         week_ago = datetime.now() - timedelta(days=7)
         sent = db.query(models.RedPacket).filter(
             models.RedPacket.sender_id == sender.id,
@@ -138,6 +140,8 @@ def claim_packet(db: Session, user: models.WebUser, packet_id: int) -> dict:
     # 领取频率检查（管理员发出的红包不计入）
     recv_limit = _get_int_config(db, "redpacket_recv_limit_7d", 10)
     if recv_limit > 0:
+        # 锁领取方用户行后再计数（锁序：红包行 → 用户行），并发抢多个红包不能绕过上限
+        economy.lock_user_row(db, user.id)
         week_ago = datetime.now() - timedelta(days=7)
         claimed = db.query(models.RedPacketClaim).join(
             models.RedPacket,
