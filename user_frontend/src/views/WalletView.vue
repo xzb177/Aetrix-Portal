@@ -494,7 +494,7 @@ onBeforeUnmount(stopPayPoll)
 
   <p class="redeem-hint" :class="{ warn: !!codeNotice }">{{ codeNotice || '会员时长 · 积分 · 兑换码，自动识别' }}</p>
 
-  <button class="au-btn au-btn-ghost au-btn-sm refresh" title="刷新" @click="() => loadAll()">
+  <button class="au-btn au-btn-ghost au-btn-sm refresh" type="button" title="刷新" @click="() => loadAll()">
     <RefreshCw :size="14" :class="{ spinning: loading }" />
   </button>
       </form>

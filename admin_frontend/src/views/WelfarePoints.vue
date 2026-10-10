@@ -48,11 +48,6 @@ const earnRedeemFields = [
   { key: 'points_redeem_30d', label: '兑换 30 天', hint: '默认 300', suffix: '积分' },
 ]
 
-const redpacketBotEnabled = computed({
-  get: () => (form.value['redpacket_bot_enabled'] ?? '1') === '1',
-  set: (v: boolean) => { form.value['redpacket_bot_enabled'] = v ? '1' : '0' },
-})
-
 const tgBindEnabled = computed({
   get: () => (form.value['welfare_require_tg_bind'] ?? '1') === '1',
   set: (v: boolean) => { form.value['welfare_require_tg_bind'] = v ? '1' : '0' },
@@ -177,10 +172,6 @@ onMounted(load)
         description="红包手续费与 7 天频率限制"
       >
         <el-form label-width="120px" class="config-form">
-          <el-form-item label="Bot 红包总开关">
-            <el-switch v-model="redpacketBotEnabled" />
-            <span class="field-hint">关闭后 /redpacket 与抢红包按钮均不可用；后端红包接口不受影响</span>
-          </el-form-item>
           <el-form-item label="过期自动退款">
             <el-switch v-model="redpacketRefundEnabled" />
             <span class="field-hint">关闭后过期红包不再自动退款；默认开启</span>
