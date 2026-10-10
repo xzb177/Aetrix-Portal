@@ -242,13 +242,14 @@ def session_capabilities(request: Request, user: models.WebUser = Depends(get_em
 
 @emby_router.get("/emby/Sessions")
 @emby_router.get("/Sessions")
-def get_sessions(request: Request, db: Session = Depends(get_db)):
-    sessions = (
-        db.query(em.PlaybackSession)
-        .filter(em.PlaybackSession.ended_at.is_(None))
-        .order_by(em.PlaybackSession.last_update_at.desc())
-        .all()
-    )
+def get_sessions(request: Request, db: Session = Depends(get_db),
+                 user: models.WebUser = Depends(get_emby_user)):
+    # P0 修复（审查）：此前无任何鉴权，未登录可窥探全站"谁在看什么"。
+    # Emby 官方口径要求管理员；这里放宽为"本人看本人、管理看全站"，不破坏客户端兼容。
+    q = db.query(em.PlaybackSession).filter(em.PlaybackSession.ended_at.is_(None))
+    if not getattr(user, "is_staff", False):
+        q = q.filter(em.PlaybackSession.user_id == user.id)
+    sessions = q.order_by(em.PlaybackSession.last_update_at.desc()).all()
     result = []
     for s in sessions:
         item = db.query(em.MediaItem).filter(em.MediaItem.id == s.item_id).first()
@@ -260,11 +261,15 @@ def get_sessions(request: Request, db: Session = Depends(get_db)):
 
 @emby_router.delete("/emby/Sessions/{session_key}")
 @emby_router.delete("/Sessions/{session_key}")
-def stop_session(session_key: str, db: Session = Depends(get_db)):
+def stop_session(session_key: str, db: Session = Depends(get_db),
+                 user: models.WebUser = Depends(get_emby_user)):
+    # P0 修复（审查）：此前无任何鉴权，未登录可结束任意用户会话并杀其转码进程。
     session = db.query(em.PlaybackSession).filter(
         em.PlaybackSession.session_key == session_key
     ).first()
     if session:
+        if session.user_id != user.id and not getattr(user, "is_staff", False):
+            raise HTTPException(status_code=403, detail="无权操作他人的播放会话")
         # 转码会话按「用户 + 条目 guid」反查：播放会话键与转码 uuid 不是一回事
         # （旧写法 stop_transcode(session_key) 永远匹配不上，进程其实没被停）
         user_id, item_guid = session.user_id, item_guid_for(db, session.item_id)
