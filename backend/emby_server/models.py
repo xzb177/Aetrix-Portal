@@ -177,10 +177,6 @@ class MediaItem(Base):
     # 为空（老数据）时视为已变更，走一次全量比对后回填。
     file_mtime = Column(Float, default=0)
     duration_ticks = Column(BigInteger, default=0)  # 100ns ticks
-    # 元数据给的片长（TMDB runtime / episode_run_time、豆瓣 duration），只作探测前的
-    # 展示回退：duration_ticks 是探测出的真实时长，二者分开存，互不覆盖，也不影响
-    # 「缺时长 → 入队探测」的判定。
-    metadata_runtime_ticks = Column(BigInteger, default=0)
     bitrate = Column(Integer, default=0)
     width = Column(Integer, default=0)
     height = Column(Integer, default=0)

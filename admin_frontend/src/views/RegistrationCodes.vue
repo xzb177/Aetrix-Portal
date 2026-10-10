@@ -16,7 +16,7 @@
  * 「注册模式」与「按类型」两张 SectionCard 并排 · 码表 flush + 统一工具条（筛选左、计数与查询右）；
  * 加载失败给可重试的错误态。
  */
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   AlertTriangle, CalendarPlus, Copy, DoorOpen, KeySquare, Layers, Plus, RefreshCw, Search, ShieldAlert, TimerOff, Trash2,
@@ -51,8 +51,6 @@ const total = ref(0)
 const loadError = ref(false)
 
 const filters = ref({ code_type: 0, state: '', keyword: '' })
-/** 最近一次发出查询时用的关键字：防抖 watch 据此跳过「已经查过」的值 */
-let lastKeyword = ''
 
 const genVisible = ref(false)
 /** 生成 / 行内动作 / 模式保存进行中（按钮 loading，防重复点击） */
@@ -129,11 +127,10 @@ const STATE_LABEL: Record<string, string> = {
 async function load() {
   loading.value = true
   loadError.value = false
-  lastKeyword = filters.value.keyword
   try {
     // realm_id=0 → 全部服；其余按服过滤（后端以当前服作为兜底）
     const scopeId = scope.value === 'all' ? 0 : (realm.activeId ?? 0)
-    const [list, stat] = await Promise.all([
+    const [list, stat, setting] = await Promise.all([
       fetchCodeList({
         code_type: filters.value.code_type || undefined,
         state: filters.value.state || undefined,
@@ -142,10 +139,15 @@ async function load() {
         limit: 200,
       }),
       fetchCodeStats(scopeId),
+      fetchRegistrationSettings(),
     ])
     codes.value = list.codes
     total.value = list.total
     stats.value = stat
+    // 注册码门禁（'code'）已下线：DB 残留值按开放注册展示
+    settings.value = setting.mode === 'code'
+      ? { ...setting, mode: 'open' as const }
+      : setting
     if (list.realms?.length) realmOptions.value = list.realms
   } catch {
     // 错误提示由 HTTP 拦截器统一处理；这里只记下失败，给出重试入口
@@ -155,54 +157,12 @@ async function load() {
   }
 }
 
-/**
- * 注册模式是全站级设置，和筛选 / 范围无关：只在进页时拉一次。
- * 以前它跟着码表一起 Promise.all——每次切筛选都重拉一遍，而且它失败会把整张码表打成错误态。
- */
-async function loadSettings() {
-  try {
-    const setting = await fetchRegistrationSettings()
-    // 注册码门禁（'code'）已下线：DB 残留值按开放注册展示
-    settings.value = setting.mode === 'code'
-      ? { ...setting, mode: 'open' as const }
-      : setting
-    savedMode.value = settings.value.mode
-  } catch {
-    /* GET 静默：拿不到就保持默认展示，不挡码表 */
-  }
-}
-/** 最近一次保存成功的模式：保存失败时把单选按钮拨回去，别让界面显示一个没生效的模式 */
-const savedMode = ref<RegistrationSettings['mode']>('open')
-
-onMounted(() => {
-  load()
-  loadSettings()
-})
-
-// 关键字搜索防抖：输入停 400ms 自动查询（回车 / 「查询」按钮仍然立即查）
-let keywordTimer: ReturnType<typeof setTimeout> | undefined
-watch(
-  () => filters.value.keyword,
-  (kw) => {
-    clearTimeout(keywordTimer)
-    // 清空 / 重置 / 回车已经立即按这个关键字查过了：不再补一次
-    if (kw === lastKeyword) return
-    keywordTimer = setTimeout(load, 400)
-  },
-)
-onUnmounted(() => clearTimeout(keywordTimer))
+onMounted(load)
 
 const hasFilter = computed(() => !!(filters.value.code_type || filters.value.state || filters.value.keyword))
 
 function resetFilters() {
   filters.value = { code_type: 0, state: '', keyword: '' }
-  clearTimeout(keywordTimer)
-  load()
-}
-
-/** 回车 / 清空 / 点「查询」：立即查，并取消还在等的防抖 */
-function searchNow() {
-  clearTimeout(keywordTimer)
   load()
 }
 
@@ -220,7 +180,6 @@ function openGenerate(codeType: 1 | 2 | 3) {
 }
 
 async function generate() {
-  if (genBusy.value) return
   genBusy.value = true
   try {
     const res = await generateCodes({
@@ -243,8 +202,6 @@ async function generate() {
     resultVisible.value = true
     ElMessage.success(res.message)
     load()
-  } catch {
-    /* 写操作失败由请求拦截器统一弹错 */
   } finally {
     genBusy.value = false
   }
@@ -256,81 +213,50 @@ async function toggle(row: RegistrationCode) {
     await patchRegistrationCode(row.id, { is_active: !row.is_active })
     ElMessage.success(row.is_active ? '已停用' : '已启用')
     load()
-  } catch {
-    /* 写操作失败由请求拦截器统一弹错 */
   } finally {
     rowBusyId.value = null
   }
 }
 
 async function remove(row: RegistrationCode) {
-  try {
-    await ElMessageBox.confirm(`确认删除卡码 ${row.code}？`, '删除卡码', {
-      type: 'warning',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
-    })
-  } catch {
-    return // 点了取消 / 关闭：不是错误
-  }
+  await ElMessageBox.confirm(`确认删除卡码 ${row.code}？`, '删除卡码', { type: 'warning' })
   rowBusyId.value = row.id
   try {
     const res = await deleteRegistrationCode(row.id)
     ElMessage.success(res.message)
     load()
-  } catch {
-    /* 写操作失败由请求拦截器统一弹错 */
   } finally {
     rowBusyId.value = null
   }
 }
 
 async function saveMode() {
-  if (modeBusy.value) return
   modeBusy.value = true
   try {
     await updateRegistrationSettings({ mode: settings.value.mode, message: settings.value.message })
-    savedMode.value = settings.value.mode
     ElMessage.success('注册模式已更新')
-  } catch {
-    // 拦截器已弹错；单选按钮拨回服务端实际生效的模式
-    settings.value.mode = savedMode.value
   } finally {
     modeBusy.value = false
   }
 }
 
 /** 旧版「批量生成」入口保留：走类型化接口，默认注册码 */
-const quickBusy = ref(false)
 async function quickGenerate() {
-  if (quickBusy.value) return
-  quickBusy.value = true
-  try {
-    const res = await generateCodes({
-      code_type: 1, // 注册码
-      count: 5, days: 30, max_uses: 1, expires_days: 30, note: '快捷生成',
-      // 快捷生成不看列表范围：永远开「当前服」的会员（要选服请用类型化生成）
-      realm_id: realm.activeId ?? undefined,
-    })
-    generated.value = res.codes.map((c) => ({ code: c.code, days_text: c.days_text }))
-    resultVisible.value = true
-    ElMessage.success(`已生成 ${generated.value.length} 个注册码`)
-    load()
-  } catch {
-    /* 写操作失败由请求拦截器统一弹错 */
-  } finally {
-    quickBusy.value = false
-  }
+  const res = await generateCodes({
+    code_type: 1, // 注册码
+    count: 5, days: 30, max_uses: 1, expires_days: 30, note: '快捷生成',
+    // 快捷生成不看列表范围：永远开「当前服」的会员（要选服请用类型化生成）
+    realm_id: realm.activeId ?? undefined,
+  })
+  generated.value = res.codes.map((c) => ({ code: c.code, days_text: c.days_text }))
+  resultVisible.value = true
+  ElMessage.success(`已生成 ${generated.value.length} 个注册码`)
+  load()
 }
 
-/** 剪贴板只在安全上下文（https / localhost）可用：http 部署下 writeText 会直接 reject */
 async function copyText(text: string) {
-  try {
-    await navigator.clipboard.writeText(text)
-    ElMessage.success('已复制')
-  } catch {
-    ElMessage.warning('浏览器不允许写入剪贴板，请手动选中复制')
-  }
+  await navigator.clipboard.writeText(text)
+  ElMessage.success('已复制')
 }
 
 function fmtDate(s: string | null): string {
@@ -365,7 +291,7 @@ function usedByNames(row: RegistrationCode): string {
           <el-radio-button value="all">全部服</el-radio-button>
         </el-radio-group>
         <el-button :icon="RefreshCw" :loading="loading" aria-label="刷新" @click="load">刷新</el-button>
-        <el-button :icon="Plus" :loading="quickBusy" @click="quickGenerate">快捷生成 5 个注册码</el-button>
+        <el-button :icon="Plus" @click="quickGenerate">快捷生成 5 个注册码</el-button>
         <el-button type="primary" :icon="Plus" @click="openGenerate(1)">类型化生成</el-button>
       </template>
     </PageHeader>
@@ -401,7 +327,7 @@ function usedByNames(row: RegistrationCode): string {
       <!-- 注册模式：全站级开关，切换即保存 -->
       <SectionCard title="注册模式" :icon="DoorOpen" :description="modeDesc(settings.mode)">
         <div class="mode-body">
-          <el-radio-group v-model="settings.mode" :disabled="modeBusy" @change="saveMode">
+          <el-radio-group v-model="settings.mode" @change="saveMode">
             <el-radio-button value="open">开放注册</el-radio-button>
             <el-radio-button value="closed">关闭注册</el-radio-button>
           </el-radio-group>
@@ -429,7 +355,7 @@ function usedByNames(row: RegistrationCode): string {
     </div>
 
     <!-- 生成弹窗 -->
-    <el-dialog v-model="genVisible" title="生成卡码" width="min(520px, 92vw)">
+    <el-dialog v-model="genVisible" title="生成卡码" width="520px">
       <el-form label-position="top">
         <el-form-item label="卡码类型">
           <el-radio-group v-model="genForm.code_type">
@@ -441,7 +367,7 @@ function usedByNames(row: RegistrationCode): string {
         </el-form-item>
         <!-- 卡码开哪个服的会员：注册码决定新用户拿到哪个服的会员 -->
         <el-form-item label="归属服">
-          <el-select v-model="genForm.realm_id" placeholder="选择归属服" class="realm-select">
+          <el-select v-model="genForm.realm_id" placeholder="选择归属服" style="width: 220px">
             <el-option v-for="r in realmOptions" :key="r.id" :label="r.name" :value="r.id" />
           </el-select>
           <div class="form-hint">核销后开通的是该服的会员，也只在该服的播放节点上生效。</div>
@@ -505,7 +431,7 @@ function usedByNames(row: RegistrationCode): string {
     </el-dialog>
 
     <!-- 生成结果 -->
-    <el-dialog v-model="resultVisible" title="生成结果（点击复制）" width="min(460px, 92vw)">
+    <el-dialog v-model="resultVisible" title="生成结果（点击复制）" width="460px">
       <div class="gen-list">
         <button v-for="c in generated" :key="c.code" class="gen-code" @click="copyText(c.code)">
           {{ c.code }}<span class="gen-days">{{ c.days_text }}</span>
@@ -531,8 +457,8 @@ function usedByNames(row: RegistrationCode): string {
             class="f-search"
             placeholder="搜索卡码 / 备注 / 指名账号"
             clearable
-            @keyup.enter="searchNow"
-            @clear="searchNow"
+            @keyup.enter="load"
+            @clear="load"
           >
             <template #prefix><Search :size="14" /></template>
           </el-input>
@@ -552,7 +478,7 @@ function usedByNames(row: RegistrationCode): string {
         </div>
         <div class="view-toolbar__actions">
           <el-button v-if="hasFilter" text @click="resetFilters">清空筛选</el-button>
-          <el-button type="primary" :icon="Search" @click="searchNow">查询</el-button>
+          <el-button type="primary" :icon="Search" @click="load">查询</el-button>
         </div>
       </div>
 
@@ -714,7 +640,6 @@ function usedByNames(row: RegistrationCode): string {
 .code-chip:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; }
 
 /* ---------- 弹窗 ---------- */
-.realm-select { width: 220px; max-width: 100%; }
 .inline-hint { margin-left: 10px; }
 .decoy-hint { display: inline-flex; align-items: center; gap: 4px; }
 

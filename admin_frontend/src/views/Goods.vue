@@ -339,7 +339,7 @@ onMounted(load)
     </SectionCard>
 
     <!-- 订阅套餐对话框 -->
-    <el-dialog v-model="planVisible" :title="planEditing ? '编辑订阅套餐' : '新增订阅套餐'" width="min(520px, 92vw)">
+    <el-dialog v-model="planVisible" :title="planEditing ? '编辑订阅套餐' : '新增订阅套餐'" width="520px">
       <el-form label-position="top">
         <el-form-item label="名称"><el-input v-model="planForm.name" maxlength="50" /></el-form-item>
         <el-form-item label="归属服">
@@ -374,7 +374,7 @@ onMounted(load)
     </el-dialog>
 
     <!-- 充值套餐对话框 -->
-    <el-dialog v-model="pkgVisible" :title="pkgEditing ? '编辑充值套餐' : '新增充值套餐'" width="min(480px, 92vw)">
+    <el-dialog v-model="pkgVisible" :title="pkgEditing ? '编辑充值套餐' : '新增充值套餐'" width="480px">
       <el-form label-position="top">
         <el-form-item label="名称"><el-input v-model="pkgForm.name" maxlength="50" /></el-form-item>
         <div class="form-grid">

@@ -32,7 +32,6 @@ const current = ref<TicketRow | null>(null)
 const messages = ref<TicketMessageRow[]>([])
 // 抽屉先开、消息后到：不给这个状态的话，拉取期间会先闪一下「两个管理员之间的空白」
 const detailLoading = ref(false)
-const detailError = ref(false)
 const replyText = ref('')
 const sending = ref(false)
 /** 行内「关闭」动作进行中（按钮 loading，防重复点击） */
@@ -59,12 +58,8 @@ async function openDetail(t: TicketRow) {
   replyText.value = ''
   drawerVisible.value = true
   detailLoading.value = true
-  detailError.value = false
   try {
     messages.value = await fetchTicketMessages(t.id)
-  } catch {
-    // 拦截器已提示；区分「读取失败」与「还没有对话」
-    detailError.value = true
   } finally {
     detailLoading.value = false
   }
@@ -78,8 +73,6 @@ async function send(closeAfter: boolean) {
     ElMessage.success(closeAfter ? '已回复并关闭工单' : '回复成功')
     drawerVisible.value = false
     load()
-  } catch {
-    // 拦截器已提示；保留已输入的回复
   } finally {
     sending.value = false
   }
@@ -101,8 +94,6 @@ async function close(t: TicketRow) {
     ElMessage.success('工单已关闭')
     if (current.value?.id === t.id) current.value.status = 'closed'
     load()
-  } catch {
-    // 拦截器已提示
   } finally {
     rowBusyId.value = null
   }
@@ -202,7 +193,7 @@ function statusBadge(status: string): string {
       </DataTable>
     </SectionCard>
 
-    <el-drawer v-model="drawerVisible" :title="current?.title || '工单详情'" size="min(460px, 92vw)">
+    <el-drawer v-model="drawerVisible" :title="current?.title || '工单详情'" size="460px">
       <div v-if="current" class="ticket-meta">
         <dl class="meta-line">
           <div><dt>提交人</dt><dd>{{ current.user_name }}</dd></div>
@@ -243,11 +234,6 @@ function statusBadge(status: string): string {
         <div v-if="detailLoading" class="msg-loading">
           <el-skeleton :rows="3" animated />
         </div>
-        <EmptyState v-else-if="detailError" compact :icon="Inbox" title="对话读取失败">
-          <template #actions>
-            <el-button size="small" @click="current && openDetail(current)">重试</el-button>
-          </template>
-        </EmptyState>
         <EmptyState v-else-if="!messages.length" compact :icon="Inbox" title="还没有对话内容" />
         <div v-for="m in messages" :key="m.id" class="msg" :class="{ admin: m.is_admin }">
           <div class="msg-meta">

@@ -113,33 +113,6 @@ const scanKeep = ref(0)
 const scanQueue = ref<EmbyScanQueue | null>(null)
 let queueTimer: number | undefined
 let queueWasBusy = false
-/** 扫描后「过一会儿再刷列表」的延时任务：离开页面时一并清掉，别在卸载后还发请求 */
-const pendingReloads = new Set<number>()
-function reloadSoon(ms: number) {
-  const id = window.setTimeout(() => {
-    pendingReloads.delete(id)
-    void load()
-  }, ms)
-  pendingReloads.add(id)
-}
-
-/** 标签页切到后台就停掉队列轮询，回到前台立刻补拉一次再恢复（3 秒一次的请求没人看就是浪费） */
-function startQueuePolling() {
-  if (queueTimer) return
-  queueTimer = window.setInterval(pollQueue, 3000)
-}
-function stopQueuePolling() {
-  if (queueTimer) window.clearInterval(queueTimer)
-  queueTimer = undefined
-}
-function onVisibilityChange() {
-  if (document.hidden) {
-    stopQueuePolling()
-  } else {
-    void pollQueue()
-    startQueuePolling()
-  }
-}
 
 // 播放可达性（v2.28.0）：面板扫描正常 ≠ 出流的机器拿得到内容。
 // 分离部署（EM 控制面 + EA 数据面 + 共享存储）下这是最该先看的一页：
@@ -626,7 +599,18 @@ async function toggleChase(on: boolean) {
   chaseLibSaving.value = true
   try {
     const res = await saveChaseNew(cfg.enabled, cfg.interval, [...ids].sort((a, b) => a - b).join(','))
-    chaseNew.value = normalizeChase(res)
+    chaseNew.value = {
+      enabled: res.enabled,
+      interval: res.interval,
+      excluded: res.excluded,
+      libraries: res.libraries,
+      last_check: res.last_check,
+      last_found: res.last_found,
+      drive_changes: res.drive_changes || { running: false, last_poll: null, last_changes: 0, last_libs_triggered: 0 },
+      recent_runs: res.recent_runs || [],
+      alerts: res.alerts || [],
+      total_found: res.total_found || 0,
+    }
     libForm.chase = on
     // 追新是即时保存的，不算「未保存的改动」——只把指纹里的这一项对齐，
     // 其余字段的改动状态要原样留着
@@ -733,18 +717,13 @@ async function load() {
 onMounted(() => {
   load()
   pollQueue()
-  // 队列与进度都是秒级的东西：页面开着（且在前台）就轮询；空闲时请求极小，且不刷整页列表
-  if (!document.hidden) startQueuePolling()
-  document.addEventListener('visibilitychange', onVisibilityChange)
+  // 队列与进度都是秒级的东西：页面开着就轮询（空闲时请求极小，且不刷整页列表）
+  queueTimer = window.setInterval(pollQueue, 3000)
 })
 
 onUnmounted(() => {
-  stopQueuePolling()
-  document.removeEventListener('visibilitychange', onVisibilityChange)
-  pendingReloads.forEach((id) => window.clearTimeout(id))
-  pendingReloads.clear()
+  if (queueTimer) window.clearInterval(queueTimer)
   Object.values(coverUrls.value).forEach((url) => URL.revokeObjectURL(url))
-  releaseCoverPreview()
 })
 
 async function loadCoverImages(rows: EmbyLibrary[]) {
@@ -823,7 +802,7 @@ async function repairNow() {
   const merged = res.already?.length || 0
   ElMessage.success(`已把 ${res.libraries.length} 个库加入扫描队列${merged ? `（另 ${merged} 个已在队列中，已合并）` : ''}`)
   await pollQueue()
-  reloadSoon(2000)
+  setTimeout(load, 2000)
 }
 
 async function scan(l: EmbyLibrary, full = false) {
@@ -833,7 +812,7 @@ async function scan(l: EmbyLibrary, full = false) {
   else if (res.started === false) ElMessage.warning(`「${l.name}」${res.message || '已加入扫描队列'}`)
   else ElMessage.success(`「${l.name}」${full ? '全量扫描已启动' : '扫描已启动'}`)
   await pollQueue()
-  reloadSoon(1500)
+  setTimeout(load, 1500)
 }
 
 /**
@@ -887,7 +866,7 @@ async function scanAll() {
     ElMessage.error(e?.response?.data?.detail || e?.message || '一键扫描失败')
   }
   await pollQueue()
-  reloadSoon(1500)
+  setTimeout(load, 1500)
 }
 
 // ==================== 元数据与刮削 ====================
@@ -895,55 +874,25 @@ async function scanAll() {
 const autoScan = ref<AutoScanConfig | null>(null)
 const autoScanSaving = ref(false)
 
-/** 定时扫描配置读取失败（区分「读取中」与「读不到」） */
-const autoScanError = ref(false)
-
 async function loadAutoScanConfig() {
   try {
     const res = await fetchAutoScan()
     autoScan.value = { enabled: res.enabled, time: res.time, last_run: res.last_run }
-    autoScanError.value = false
   } catch {
     autoScan.value = null // 出错不挡页面其它内容
-    autoScanError.value = true
   }
 }
 
 // 追新：开关 + 轮询间隔（分钟），默认关闭
 const chaseNew = ref<ChaseNewConfig | null>(null)
-/** 追新配置读取失败（区分「读取中」与「读不到」，两者给的提示不一样） */
-const chaseNewError = ref(false)
-
-/** 运行记录里的 ISO 时间 → 「YYYY-MM-DD HH:MM:SS」 */
-function fmtRunTime(s: string | null | undefined): string {
-  return s ? s.slice(0, 19).replace('T', ' ') : '—'
-}
-
-/** 接口响应 → 页面状态：老后端没有 drive_changes / recent_runs / alerts 时补默认值（三处共用） */
-function normalizeChase(res: ChaseNewConfig): ChaseNewConfig {
-  return {
-    enabled: res.enabled,
-    interval: res.interval,
-    excluded: res.excluded,
-    libraries: res.libraries,
-    last_check: res.last_check,
-    last_found: res.last_found,
-    drive_changes: res.drive_changes || { running: false, last_poll: null, last_changes: 0, last_libs_triggered: 0 },
-    recent_runs: res.recent_runs || [],
-    alerts: res.alerts || [],
-    total_found: res.total_found || 0,
-  }
-}
 const chaseNewSaving = ref(false)
 
 async function loadChaseNewConfig() {
   try {
     const res = await fetchChaseNew()
-    chaseNew.value = normalizeChase(res)
-    chaseNewError.value = false
+    chaseNew.value = { enabled: res.enabled, interval: res.interval, excluded: res.excluded, libraries: res.libraries, last_check: res.last_check, last_found: res.last_found, drive_changes: res.drive_changes || { running: false, last_poll: null, last_changes: 0, last_libs_triggered: 0 }, recent_runs: res.recent_runs || [], alerts: res.alerts || [], total_found: res.total_found || 0 }
   } catch {
     chaseNew.value = null
-    chaseNewError.value = true
   }
 }
 
@@ -952,7 +901,7 @@ async function saveChaseNewAction() {
   chaseNewSaving.value = true
   try {
     const res = await saveChaseNew(chaseNew.value.enabled, chaseNew.value.interval, chaseNew.value.excluded)
-    chaseNew.value = normalizeChase(res)
+    chaseNew.value = { enabled: res.enabled, interval: res.interval, excluded: res.excluded, libraries: res.libraries, last_check: res.last_check, last_found: res.last_found, drive_changes: res.drive_changes || { running: false, last_poll: null, last_changes: 0, last_libs_triggered: 0 }, recent_runs: res.recent_runs || [], alerts: res.alerts || [], total_found: res.total_found || 0 }
     ElMessage.success(res.enabled ? '追新已开启（每 ' + res.interval + ' 分钟）' : '追新已关闭')
   } catch (e: any) {
     ElMessage.error(e?.response?.data?.detail || '保存失败')
@@ -1046,15 +995,11 @@ const tmdbLangSaving = ref(false)
 
 const tmdbLangLabel = (v: string) => TMDB_LANGUAGE_LABELS[v] || v
 
-const tmdbLangError = ref(false)
-
 async function loadTmdbLanguageConfig() {
   try {
     tmdbLang.value = await fetchTmdbLanguage()
-    tmdbLangError.value = false
   } catch {
     tmdbLang.value = null // 出错不挡页面其它内容
-    tmdbLangError.value = true
   }
 }
 
@@ -1118,15 +1063,11 @@ async function cancelQueued(t: EmbyScanTask) {
 }
 
 async function removeLib(l: EmbyLibrary) {
-  try {
-    await ElMessageBox.confirm(
-      `删除媒体库「${l.name}」将同时移除其索引条目（不删除磁盘文件），确定吗？`,
-      '确认删除',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
-    )
-  } catch {
-    return
-  }
+  await ElMessageBox.confirm(
+    `删除媒体库「${l.name}」将同时移除其索引条目（不删除磁盘文件），确定吗？`,
+    '确认删除',
+    { type: 'warning' }
+  )
   await deleteLibrary(l.id)
   if (libFormTarget.value?.id === l.id) {
     libFormVisible.value = false
@@ -1844,11 +1785,6 @@ function typeLabel(t: string): string {
                   保存
                 </el-button>
               </div>
-              <div v-else-if="autoScanError" class="drawer-hint drawer-hint--after">
-                读取失败
-                <el-button size="small" text @click="loadAutoScanConfig">重试</el-button>
-              </div>
-              <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
               <div v-if="autoScan?.last_run" class="drawer-hint drawer-hint--after">
                 上次执行：{{ autoScan.last_run }}
               </div>
@@ -1875,66 +1811,26 @@ function typeLabel(t: string): string {
                   保存
                 </el-button>
               </div>
-              <div v-else-if="chaseNewError" class="drawer-hint drawer-hint--after">
-                读取失败
-                <el-button size="small" text @click="loadChaseNewConfig">重试</el-button>
+              <div v-if="chaseNew?.last_check" class="drawer-hint drawer-hint--after">
+                上次检查：{{ chaseNew.last_check }} ｜ 上轮发现 {{ chaseNew.last_found }} 个新文件
               </div>
-              <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
-
-              <template v-if="chaseNew">
-                <!-- 告警最先看：连续失败的源 -->
-                <div v-if="chaseNew.alerts.length" class="chase-alert" role="alert">
-                  <div class="chase-alert-title">
-                    {{ chaseNew.alerts.length }} 个来源连续失败 ≥ 3 次，新片可能发现不了
-                  </div>
-                  <ul class="chase-alert-list">
-                    <li v-for="a in chaseNew.alerts" :key="a.source_key">
-                      <span class="mono">{{ a.source_key }}</span>
-                      · 连续 {{ a.consec_failures }} 次 · {{ a.last_error || '未知错误' }}
-                      <span v-if="a.last_ok_at" class="chase-muted">（上次成功 {{ fmtRunTime(a.last_ok_at) }}）</span>
-                    </li>
-                  </ul>
-                </div>
-
-                <dl class="chase-facts">
-                  <div>
-                    <dt>上次检查</dt>
-                    <dd>{{ chaseNew.last_check || '还没有检查过' }}</dd>
-                  </div>
-                  <div>
-                    <dt>上轮 / 累计发现</dt>
-                    <dd>{{ chaseNew.last_found }} / {{ chaseNew.total_found || 0 }} 个新文件</dd>
-                  </div>
-                  <div>
-                    <dt title="Google Drive Changes API：只拉变化的文件，不用每轮列目录">增量发现（Drive Changes）</dt>
-                    <dd>
-                      <span class="chase-state" :class="{ 'is-on': chaseNew.drive_changes.running }">
-                        {{ chaseNew.drive_changes.running ? '运行中' : '未运行' }}
-                      </span>
-                      <template v-if="chaseNew.drive_changes.last_poll">
-                        · {{ fmtRunTime(chaseNew.drive_changes.last_poll) }}
-                        变化 {{ chaseNew.drive_changes.last_changes }} 个文件，触发 {{ chaseNew.drive_changes.last_libs_triggered }} 个库
-                      </template>
-                    </dd>
-                  </div>
-                </dl>
-                <p class="drawer-hint drawer-hint--after">
-                  有 Drive 挂载时优先走增量发现，其余库按上面的间隔轮询目录；两种来源的结果都记在下面的运行记录里。
-                </p>
-
-                <details v-if="chaseNew.recent_runs.length" class="chase-runs">
-                  <summary>最近 {{ chaseNew.recent_runs.length }} 轮运行</summary>
-                  <ul>
-                    <li v-for="r in chaseNew.recent_runs" :key="r.id" :class="{ 'is-error': !!r.error }">
-                      <span class="mono">{{ fmtRunTime(r.started_at) }}</span>
-                      <span>{{ r.source === 'drive-changes' ? '增量发现' : '轮询' }}</span>
-                      <span>发现 {{ r.new_found }} · 扫描 {{ r.scans_triggered }}</span>
-                      <span class="chase-run-status">{{ r.status }}</span>
-                      <span v-if="r.error" class="chase-run-error" :title="r.error">{{ r.error }}</span>
-                    </li>
-                  </ul>
-                </details>
-              </template>
+              <div v-else-if="chaseNew" class="drawer-hint drawer-hint--after">
+                还没有检查过
+              </div>
+              <div v-if="chaseNew?.alerts?.length" class="chase-alert">
+                ⚠ 追新告警：{{ chaseNew.alerts.length }} 个源连续失败 ≥3 次<span v-for="a in chaseNew.alerts" :key="a.source_key"> · {{ a.source_key }}（{{ a.last_error || '未知错误' }}）</span>
+              </div>
+              <div v-if="chaseNew?.drive_changes" class="drawer-hint drawer-hint--after">
+                增量发现（Drive Changes）：{{ chaseNew.drive_changes.running ? '运行中' : '未运行' }}<span v-if="chaseNew.drive_changes.last_poll"> ｜ 上次轮询 {{ chaseNew.drive_changes.last_poll }}，变化 {{ chaseNew.drive_changes.last_changes }} 个文件，触发 {{ chaseNew.drive_changes.last_libs_triggered }} 个库</span>
+              </div>
+              <ul v-if="chaseNew?.recent_runs?.length" class="chase-runs">
+                <li v-for="r in chaseNew.recent_runs" :key="r.id">
+                  {{ (r.started_at || '').slice(0, 19).replace('T', ' ') }} · {{ r.source === 'drive-changes' ? '增量发现' : '轮询' }} · 发现 {{ r.new_found }} / 扫描 {{ r.scans_triggered }} · {{ r.status }}
+                </li>
+              </ul>
+              <div v-if="chaseNew" class="drawer-hint drawer-hint--after">
+                历史累计发现 {{ chaseNew.total_found || 0 }} 个新文件
+              </div>
             </div>
             <div class="scrape-block">
               <h3>TMDB 首选语言</h3>
@@ -1953,10 +1849,6 @@ function typeLabel(t: string): string {
                 <el-button type="primary" size="small" :loading="tmdbLangSaving" @click="saveTmdbLanguageAction">
                   保存
                 </el-button>
-              </div>
-              <div v-else-if="tmdbLangError" class="drawer-hint drawer-hint--after">
-                读取失败
-                <el-button size="small" text @click="loadTmdbLanguageConfig">重试</el-button>
               </div>
               <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
               <div v-if="tmdbLang?.from_env" class="drawer-hint drawer-hint--after">
@@ -2374,7 +2266,7 @@ function typeLabel(t: string): string {
                 @change="onChaseSwitch"
               />
               <p class="field-help">
-                <template v-if="!chaseNew">{{ chaseNewError ? '追新配置读取失败，暂时无法切换（可到「定时与刮削」标签重试）' : '追新配置读取中…' }}</template>
+                <template v-if="!chaseNew">追新配置读取中…</template>
                 <template v-else>
                   改动即时生效：开「监听」就是正常扫新片；开「排除」就是把这个库加进
                   <strong>排除清单</strong>（当前已排除 {{ chaseExcludedIds().length }} 个库），
@@ -2581,48 +2473,22 @@ function typeLabel(t: string): string {
 .text-danger { color: var(--au-danger); }
 .field-warn-inline { color: var(--au-warning); }
 .chase-alert {
-  margin-top: 10px;
+  margin-top: 8px;
   padding: 8px 10px;
-  border: 1px solid var(--au-danger-border);
+  border: 1px solid var(--au-danger);
   border-radius: var(--au-r-md);
-  background: var(--au-danger-soft);
+  background: var(--au-bg-soft);
+  color: var(--au-danger);
   font-size: var(--font-size-xs);
   line-height: 1.7;
-  color: var(--au-text-2);
 }
-.chase-alert-title { color: var(--au-danger); font-weight: 600; }
-.chase-alert-list { margin: 4px 0 0; padding-left: 16px; overflow-wrap: anywhere; }
-.chase-muted { color: var(--au-text-3); }
-.chase-facts {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 10px 0 0;
-  padding-top: 10px;
-  border-top: 1px solid var(--au-border);
+.chase-runs {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
   font-size: var(--font-size-xs);
-}
-.chase-facts > div { display: flex; gap: 10px; min-width: 0; }
-.chase-facts dt { flex: 0 0 9em; color: var(--au-text-3); }
-.chase-facts dd { flex: 1; min-width: 0; margin: 0; color: var(--au-text-2); overflow-wrap: anywhere; }
-.chase-state { color: var(--au-text-3); }
-.chase-state.is-on { color: var(--au-success); }
-.chase-runs { margin-top: 8px; font-size: var(--font-size-xs); color: var(--au-text-3); }
-.chase-runs summary { cursor: pointer; color: var(--au-text-2); }
-.chase-runs summary:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; }
-.chase-runs ul { list-style: none; margin: 6px 0 0; padding: 0; line-height: 1.8; }
-.chase-runs li { display: flex; flex-wrap: wrap; gap: 0 8px; }
-.chase-runs li.is-error .chase-run-status { color: var(--au-danger); }
-.chase-run-error {
-  flex-basis: 100%;
-  color: var(--au-danger);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-@media (max-width: 640px) {
-  .chase-facts > div { flex-direction: column; gap: 0; }
-  .chase-facts dt { flex-basis: auto; }
+  color: var(--au-text-3);
+  line-height: 1.8;
 }
 
 /* ==================== 定时与刮削 ==================== */

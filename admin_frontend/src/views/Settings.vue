@@ -24,7 +24,7 @@ import { ElMessage } from 'element-plus'
 import {
   CalendarCheck, Coins, Flame, Globe, KeyRound, Mail, MapPin, Network, Palette, RefreshCw, Save,
   ShieldCheck, Send, Sparkles, TicketCheck, UserPlus, Wallet, ShieldAlert, Lock, Zap,
-  DatabaseBackup, HardDrive, History, TriangleAlert, Eraser, SlidersHorizontal, PlugZap, Rocket,
+  DatabaseBackup, HardDrive, History, TriangleAlert, Eraser, SlidersHorizontal, PlugZap,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
 import { useBreakpoint } from '@/composables/useBreakpoint'
@@ -278,7 +278,7 @@ const GROUPS: Group[] = [
     id: 'stream_accel',
     title: '流媒体加速',
     desc: '一键开启：强制域名访问（防 IP 直连） + 自动信任 CF 真实 IP + 播放地址统一用加速域名',
-    icon: Rocket,
+    icon: Zap,
     fields: [
       { key: 'stream_accel_enabled', label: '启用加速', type: 'bool' },
       {
@@ -290,38 +290,6 @@ const GROUPS: Group[] = [
     ],
   },
 ]
-
-/**
- * 分组归类：运营参数越加越多（签到 / 活力值 / 邀请 / 支付 / 预热…），平铺 9 块卡片很难找。
- * 按「管什么」分成三段，目录与正文用同一份归类；注册策略固定放在第一段开头。
- */
-interface GroupSection {
-  id: string
-  title: string
-  groups: Group[]
-}
-const SECTION_DEFS: Array<{ id: string; title: string; groups: string[] }> = [
-  { id: 'growth', title: '注册与福利', groups: ['checkin', 'vitality', 'invitation', 'exchange'] },
-  { id: 'commerce', title: '付费与支付', groups: ['payment', 'paywall'] },
-  { id: 'playback', title: '播放与风控', groups: ['risk', 'prewarm', 'stream_accel'] },
-]
-const SECTIONS: GroupSection[] = (() => {
-  const used = new Set<string>()
-  const sections = SECTION_DEFS.map((s) => ({
-    id: s.id,
-    title: s.title,
-    groups: s.groups
-      .map((id) => GROUPS.find((g) => g.id === id))
-      .filter((g): g is Group => {
-        if (g) used.add(g.id)
-        return Boolean(g)
-      }),
-  }))
-  // 新加的分组忘了归类时兜底放到「其它」，不至于从页面上消失
-  const rest = GROUPS.filter((g) => !used.has(g.id))
-  if (rest.length) sections.push({ id: 'other', title: '其它', groups: rest })
-  return sections
-})()
 
 const loading = ref(true)
 /** 运营参数读取失败：显示错误态，避免管理员对着空表单点保存 */
@@ -348,16 +316,6 @@ const regModeHint = computed(() => {
   }
   return map[reg.mode] || ''
 })
-
-/**
- * 字段是否被后端接收：GET /economy/settings 按白名单下发全部可写键，
- * 不在返回里的键 PUT 时会被静默丢弃（保存提示成功、值却永远回不来）。
- * 这类字段置灰并说明，且不进保存载荷。读取失败（original 为空）时不做判断。
- */
-function isSupported(key: string): boolean {
-  const keys = Object.keys(original.value)
-  return !keys.length || Object.prototype.hasOwnProperty.call(original.value, key)
-}
 
 // ==================== 外部服务能力中心 ====================
 
@@ -457,7 +415,8 @@ async function saveCurrentCapability() {
     await saveCapability(drawerSlug.value, { ...drawerValues })
     ElMessage.success(`「${drawerTitle.value}」已保存${drawerSlug.value === 'proxy' ? '，出站代理立即生效' : ''}`)
     drawerOriginal.value = { ...drawerValues }
-    await Promise.all([loadCapabilities(), openCapability(drawerSlug.value), refreshEconomy()])
+    await Promise.all([loadCapabilities(), openCapability(drawerSlug.value)])
+    await load()
   } catch {
     // 拦截器已提示
   } finally {
@@ -478,25 +437,6 @@ async function runCapabilityTest() {
     // 拦截器已提示
   } finally {
     capTesting.value = false
-  }
-}
-
-/**
- * 只刷新运营参数的「生效值」，保留其它分组里还没保存的改动：
- * 以前保存任一分组都会整页 load()，把别的分组刚改的输入悄悄冲掉。
- * ``savedKeys`` 是刚保存的那批键，一律以服务端为准。
- */
-async function refreshEconomy(savedKeys: string[] = []) {
-  try {
-    const econ = await fetchEconomySettings()
-    const prev = original.value
-    for (const [key, value] of Object.entries(econ.settings)) {
-      const dirty = String(settings[key] ?? '') !== String(prev[key] ?? '')
-      if (!dirty || savedKeys.includes(key)) settings[key] = value
-    }
-    original.value = { ...econ.settings }
-  } catch {
-    // 拦截器已提示；保留当前表单
   }
 }
 
@@ -533,8 +473,6 @@ async function load() {
 }
 
 onMounted(async () => {
-  // 深链 /settings?tab=danger 进来时 tab 在挂载前就已是 danger，下面的 watch(tab) 不会触发
-  if (tab.value === 'danger') loadDanger()
   await Promise.all([load(), loadCapabilities(), loadHotlink()])
 })
 
@@ -596,7 +534,7 @@ async function saveHotlink() {
   }
 }
 
-/** 运营参数页签顶部的分组跳转：分组多（注册 + 9 块），先看目录再定位，不用一路滚 */
+/** 运营参数页签顶部的分组跳转：分组多（8 块），先看目录再定位，不用一路滚 */
 function scrollToGroup(id: string) {
   document.getElementById(`group-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
@@ -610,15 +548,12 @@ function reloadAll() {
 }
 
 function isDirty(group: Group): boolean {
-  return group.fields.some(
-    (f) => isSupported(f.key) && String(settings[f.key] ?? '') !== String(original.value[f.key] ?? ''),
-  )
+  return group.fields.some((f) => String(settings[f.key] ?? '') !== String(original.value[f.key] ?? ''))
 }
 
 async function saveGroup(group: Group) {
   const payload: EconomySettings = {}
   for (const f of group.fields) {
-    if (!isSupported(f.key)) continue
     const raw = String(settings[f.key] ?? '').trim()
     if (f.type === 'int') {
       const n = Number.parseInt(raw === '' ? '0' : raw, 10)
@@ -633,7 +568,7 @@ async function saveGroup(group: Group) {
   try {
     await updateEconomySettings(payload)
     ElMessage.success(`「${group.title}」已保存`)
-    await refreshEconomy(Object.keys(payload))
+    await load()
   } catch {
     // 拦截器已提示
   } finally {
@@ -837,38 +772,26 @@ watch(
             description="下面的表单可能不是当前生效值，请先点右上角「重新载入」再修改。"
           />
 
-          <!-- 分组目录：按三段归类一眼看全，带未保存标记，点击跳转；滚动时吸顶 -->
+          <!-- 分组目录：8 块配置一眼看全，带未保存标记，点击跳转 -->
           <nav class="group-nav" aria-label="运营参数分组">
-            <div v-for="sec in SECTIONS" :key="sec.id" class="group-nav-sec">
-              <span class="group-nav-label">{{ sec.title }}</span>
-              <button
-                v-if="sec.id === 'growth'"
-                type="button"
-                class="group-chip"
-                @click="scrollToGroup('registration')"
-              >
-                <KeyRound :size="13" />注册策略
-              </button>
-              <button
-                v-for="g in sec.groups"
-                :key="g.id"
-                type="button"
-                class="group-chip"
-                :class="{ 'is-dirty': isDirty(g) }"
-                @click="scrollToGroup(g.id)"
-              >
-                <component :is="g.icon" :size="13" />{{ g.title }}
-                <span v-if="isDirty(g)" class="chip-dot" aria-label="有未保存的改动" />
-              </button>
-            </div>
+            <button type="button" class="group-chip" @click="scrollToGroup('registration')">
+              <KeyRound :size="13" />注册策略
+            </button>
+            <button
+              v-for="g in GROUPS"
+              :key="g.id"
+              type="button"
+              class="group-chip"
+              :class="{ 'is-dirty': isDirty(g) }"
+              @click="scrollToGroup(g.id)"
+            >
+              <component :is="g.icon" :size="13" />{{ g.title }}
+              <span v-if="isDirty(g)" class="chip-dot" aria-label="有未保存的改动" />
+            </button>
           </nav>
-
-          <template v-for="sec in SECTIONS" :key="sec.id">
-          <h2 :id="`section-${sec.id}`" class="au-eyebrow section-title">{{ sec.title }}</h2>
 
           <!-- 注册策略 -->
           <SectionCard
-            v-if="sec.id === 'growth'"
             id="group-registration"
             title="注册策略"
             :icon="KeyRound"
@@ -926,9 +849,8 @@ watch(
             </template>
           </SectionCard>
 
-          <!-- 支付状态提示：放在「付费与支付」段首，紧挨着要配的网关字段 -->
+          <!-- 支付状态提示 -->
           <el-alert
-            v-if="sec.id === 'commerce'"
             :type="paymentReady ? 'success' : 'warning'"
             show-icon
             :closable="false"
@@ -939,7 +861,7 @@ watch(
 
           <!-- 经济配置分组 -->
           <SectionCard
-            v-for="g in sec.groups"
+            v-for="g in GROUPS"
             :id="`group-${g.id}`"
             :key="g.id"
             :title="g.title"
@@ -957,7 +879,7 @@ watch(
                 v-for="f in g.fields"
                 :key="f.key"
                 :label="f.label"
-                :class="{ 'is-wide': f.type === 'str' || f.type === 'secret', 'is-unsupported': !isSupported(f.key) }"
+                :class="{ 'is-wide': f.type === 'str' || f.type === 'secret' }"
               >
                 <div class="field-stack">
                   <div class="field-control">
@@ -966,7 +888,6 @@ watch(
                       v-model="settings[f.key]"
                       active-value="true"
                       inactive-value="false"
-                      :disabled="!isSupported(f.key)"
                     />
                     <el-input
                       v-else-if="f.type === 'int'"
@@ -974,13 +895,11 @@ watch(
                       type="number"
                       min="0"
                       class="num-input"
-                      :disabled="!isSupported(f.key)"
                     />
                     <el-select
                       v-else-if="f.choices"
                       v-model="settings[f.key]"
                       class="w-full"
-                      :disabled="!isSupported(f.key)"
                     >
                       <el-option
                         v-for="c in f.choices"
@@ -995,14 +914,10 @@ watch(
                       :type="f.type === 'secret' ? 'password' : 'text'"
                       :show-password="f.type === 'secret'"
                       :placeholder="f.type === 'secret' ? '留空表示不修改' : ''"
-                      :disabled="!isSupported(f.key)"
                     />
                     <span v-if="f.suffix" class="field-suffix">{{ f.suffix }}</span>
                   </div>
                   <span v-if="f.hint" class="field-hint">{{ f.hint }}</span>
-                  <span v-if="!isSupported(f.key)" class="field-hint warn">
-                    当前后端未开放此项的写入（不在 /economy/settings 返回里），保存会被忽略，已置灰。
-                  </span>
                 </div>
               </el-form-item>
             </el-form>
@@ -1021,9 +936,8 @@ watch(
             </template>
           </SectionCard>
 
-          <!-- 防盗链：独立卡片（TTL 需要范围校验，走独立 endpoint），归入「播放与风控」段 -->
+          <!-- 防盗链：独立卡片（TTL 需要范围校验，走独立 endpoint） -->
           <SectionCard
-            v-if="sec.id === 'playback'"
             id="group-hotlink"
             title="防盗链"
             :icon="ShieldCheck"
@@ -1091,7 +1005,6 @@ watch(
               </div>
             </template>
           </SectionCard>
-          </template>
 
           <p class="foot-note">
             <Coins :size="13" />
@@ -1329,20 +1242,10 @@ watch(
 
 /* ==================== 运营参数：分组目录 ==================== */
 .group-nav {
-  position: sticky;
-  top: calc(62px + env(safe-area-inset-top));
-  z-index: 5;
   display: flex;
+  gap: 6px;
   flex-wrap: wrap;
-  gap: 8px 18px;
-  padding: 10px 0;
-  background: var(--au-bg);
-  border-bottom: 1px solid var(--au-border);
 }
-.group-nav-sec { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.group-nav-label { font-size: 11.5px; color: var(--au-text-3); margin-right: 2px; white-space: nowrap; }
-.section-title { margin: 8px 0 -4px; scroll-margin-top: 140px; }
-.field-hint.warn { color: var(--au-warning); }
 .group-chip {
   display: inline-flex;
   align-items: center;
@@ -1368,7 +1271,7 @@ watch(
   background: var(--au-primary);
 }
 /* 跳转落点别被顶栏压住 */
-.group-card { scroll-margin-top: 140px; }
+.group-card { scroll-margin-top: 80px; }
 
 /* ==================== 表单 ==================== */
 .field-form :deep(.el-form-item) { margin-bottom: 18px; }
@@ -1512,8 +1415,7 @@ watch(
   .card-footer :deep(.el-button) { flex: 1 1 auto; margin-left: 0; }
   .purge-input { flex: 1 1 100px; }
   .settings-body { gap: 12px; }
-  .group-nav { flex-wrap: nowrap; overflow-x: auto; padding: 8px 0; scrollbar-width: none; }
-  .group-nav-sec { flex-wrap: nowrap; flex: none; }
+  .group-nav { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
   .group-chip { flex: none; }
   .cap-grid { grid-template-columns: 1fr; }
   .cap-flow { column-width: auto; column-count: 1; }

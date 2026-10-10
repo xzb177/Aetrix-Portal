@@ -1201,7 +1201,7 @@ const opsLastScan = ref<{
     <el-dialog
       v-model="dialogVisible"
       :title="editingId ? '编辑服务器' : '添加服务器'"
-      width="min(560px, 92vw)"
+      width="min(560px, 94vw)"
       class="server-dialog"
     >
       <el-form label-position="top">
@@ -1375,7 +1375,7 @@ const opsLastScan = ref<{
       与全部动作放在一处。以前这些分散在带 tooltip 的列里，左边是 5 个按钮。
       动作做完弹窗不关，弹窗里的快照就地刷新。
     -->
-    <el-dialog v-model="manage.visible" :title="`管理服务器「${manage.row?.name || ''}」`" width="min(580px, 92vw)">
+    <el-dialog v-model="manage.visible" :title="`管理服务器「${manage.row?.name || ''}」`" width="min(580px, 94vw)">
       <div v-if="manage.row" class="mg-body">
         <div class="kv-list">
           <div class="kv-row"><span class="kv-key">名称</span>

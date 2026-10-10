@@ -25,25 +25,25 @@ import {
   Film, MessageSquareDashed, Ticket, Users, Wallet,
   Coins, CalendarCheck, TicketCheck, Gift, ArrowRight, TrendingUp,
   Server, HardDrive, ScanSearch, CloudDownload, Download, Route as RealmIcon, Trophy, Flame, Activity,
-  AlertTriangle,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
-  fetchLibraries, fetchOverview, fetchPlaybackStats, fetchRealmOverview,
+  fetchLibraries, fetchMounts, fetchOverview, fetchPlaybackStats, fetchRealmOverview,
   fetchServersSummary, fetchStatsTrend, fetchBackendServices,
   type BackendServiceStatus } from '@/api/admin'
 import { fetchEconomyStats, type EconomyStats } from '@/api/economy'
 import type {
-  EmbyLibrary, OverviewStats, PlaybackStats, RealmOverview, ServerSummary, TrendStats,
+  EmbyLibrary, OverviewStats, PlaybackStats, RealmOverview, ServerSummary,
+  StorageMount, TrendStats,
 } from '@/types'
 
 const overview = ref<OverviewStats | null>(null)
 const playback = ref<PlaybackStats | null>(null)
 const economy = ref<EconomyStats | null>(null)
 const trend = ref<TrendStats | null>(null)
-// 存储健康卡按库的本机目录可读性判（见 mountSummary）。以前这里还单独拉一次 /mounts，
-// 结果从没被用到——「存储来源」独立页撤销后成了每次进仪表盘白打的一个请求，已去掉。
 const libraries = ref<EmbyLibrary[]>([])
+/** 存储来源：交付链的起点——挂载断了，媒体库扫不到、也播不了 */
+const mounts = ref<StorageMount[]>([])
 /** 服务器接入情况：面板到底接了几台后端服 / 几台 Emby 服 / 有没有接下载器 */
 const servers = ref<ServerSummary | null>(null)
 /** 后端服务：aetrix-api + aetrix-worker 的运行状态 */
@@ -52,8 +52,6 @@ const backendServices = ref<BackendServiceStatus[]>([])
 const realms = ref<RealmOverview | null>(null)
 const loading = ref(true)
 const trendLoading = ref(false)
-/** 核心三项（概览 / 播放 / 经营）里拿不到的那几项：页面照常渲染其余部分，顶部给一条可重试的提示 */
-const failedParts = ref<string[]>([])
 
 const days = ref(14)
 type Metric = 'new_users' | 'plays' | 'revenue' | 'checkins'
@@ -71,33 +69,22 @@ async function loadTrend() {
   trendLoading.value = true
   try {
     trend.value = await fetchStatsTrend(days.value)
-  } catch {
-    // GET 静默：趋势拿不到就显示空图，不让切 7/14/30 天抛出未处理的 rejection
-    trend.value = null
   } finally {
     trendLoading.value = false
   }
 }
 
-/**
- * 首屏：所有请求并行（趋势也不再排在其余请求之后串行等待）。
- * 以前核心三项任何一个失败，整个 Promise.all 直接 reject——页面落成一排 0、没有任何提示，
- * 还多一条未处理的 rejection。现在逐项兜底，失败的那几项在顶部点名并给「重试」。
- */
-async function loadAll() {
-  loading.value = true
-  const failed: string[] = []
-  const soft = <T,>(label: string, p: Promise<T>) => p.catch(() => { failed.push(label); return null })
+onMounted(async () => {
   try {
-    const [o, p, e, libraryData, serverData, realmData, backendData] = await Promise.all([
-      soft('概览', fetchOverview()),
-      soft('播放统计', fetchPlaybackStats()),
-      soft('经营数据', fetchEconomyStats()),
+    const [o, p, e, libraryData, serverData, realmData, mountData, backendData] = await Promise.all([
+      fetchOverview(),
+      fetchPlaybackStats(),
+      fetchEconomyStats(),
       fetchLibraries().catch(() => ({ libraries: [] as EmbyLibrary[] })),
       fetchServersSummary().catch(() => null),
       fetchRealmOverview().catch(() => null),
+      fetchMounts().catch(() => null),
       fetchBackendServices().catch(() => ({ services: [] as BackendServiceStatus[] })),
-      loadTrend(),
     ])
     overview.value = o
     playback.value = p
@@ -105,14 +92,13 @@ async function loadAll() {
     libraries.value = libraryData.libraries
     servers.value = serverData
     realms.value = realmData
-    backendServices.value = (backendData as { services?: BackendServiceStatus[] } | null)?.services || []
+    mounts.value = mountData?.mounts || []
+    backendServices.value = (backendData as any)?.services || []
+    await loadTrend()
   } finally {
-    failedParts.value = failed
     loading.value = false
   }
-}
-
-onMounted(loadAll)
+})
 
 // ==================== 服务器接入（信息展示）====================
 
@@ -194,7 +180,7 @@ const mountSummary = computed(() => {
 
 type KpiTone = 'plain' | 'ok' | 'info' | 'warn' | 'danger'
 
-/** 顶部五张卡：一条交付链看下来（用户 → 求片 → 工单 → 内容 → 存储） */
+/** 顶部六张卡：一条交付链看下来（用户 → 播放 → 待办 → 内容 → 存储） */
 const kpis = computed<{
   key: string; label: string; value: number | string; foot: string
   to: string; icon: unknown; tone: KpiTone; title: string
@@ -335,18 +321,6 @@ function serviceStatusLabel(status: string): string {
     </div>
 
     <template v-else>
-      <el-alert
-        v-if="failedParts.length"
-        type="warning"
-        :closable="false"
-        show-icon
-        :title="`部分数据没拿到：${failedParts.join('、')}。下面对应的数字暂按 0 显示。`"
-      >
-        <template #default>
-          <el-button size="small" :icon="AlertTriangle" @click="loadAll">重新加载</el-button>
-        </template>
-      </el-alert>
-
       <!--
         交付链数据卡：先回答「现在能不能用、有没有要处理的」——
         用户 → 求片 → 工单 → 内容（扫描）→ 存储，每张卡点进去就是这个数的明细页。
@@ -483,7 +457,7 @@ function serviceStatusLabel(status: string): string {
         <StatTile to="/invitations" :icon="Coins" label="积分存量" :value="economy?.total_points ?? 0" hint="全站用户持有" />
         <StatTile to="/users" :icon="CalendarCheck" label="今日签到" :value="economy?.checkins_today ?? 0" hint="人已签到" />
         <StatTile
-          to="/codes?tab=exchange"
+          to="/exchange-codes"
           :icon="TicketCheck"
           label="兑换码"
           :value="economy?.exchange_codes.used ?? 0"
@@ -605,22 +579,17 @@ function serviceStatusLabel(status: string): string {
 /* ===== 首屏骨架 ===== */
 .dash-skeleton {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 12px;
 }
 .sk-tile { height: 104px; border-radius: var(--au-r-lg); }
 .sk-wide { grid-column: 1 / -1; height: 240px; border-radius: var(--au-r-lg); }
 
-/* ===== 网格 =====
- * 交付链固定五张卡：auto-fit + minmax(210px) 在 1280 宽（内容区约 990px）只排得下 4 张，
- * 第 5 张孤零零掉到第二行。改成按视口给列数：宽屏 5 列一行排完，平板 3+2，手机 2+2+1（末张通栏）。 */
+/* ===== 网格 ===== */
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 12px;
-}
-@media (max-width: 1180px) {
-  .kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 .tile-grid {
@@ -631,7 +600,7 @@ function serviceStatusLabel(status: string): string {
 
 .two-col {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 16px;
 }
 
@@ -725,7 +694,7 @@ function serviceStatusLabel(status: string): string {
 .realm-row:hover { border-color: var(--au-border-strong); background: var(--au-surface-2); }
 .realm-row.current { border-color: var(--au-primary-border); }
 .realm-row.off { opacity: 0.6; }
-.realm-name { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-width: min(190px, 100%); }
+.realm-name { display: flex; align-items: center; gap: 7px; min-width: 190px; }
 .realm-name strong { color: var(--au-text); font-size: 13px; }
 .realm-stats { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-left: auto; }
 .realm-stats span { color: var(--au-text-3); font-size: 12px; }
@@ -817,10 +786,8 @@ function serviceStatusLabel(status: string): string {
 /* ===== 手机 ===== */
 @media (max-width: 640px) {
   .dashboard { gap: 12px; }
-  .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-  .kpi-grid > :last-child:nth-child(odd) { grid-column: 1 / -1; }
-  /* min(100%, …)：极窄屏（≤320px）也不会被轨道下限撑出横向滚动 */
-  .tile-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 10px; }
+  .kpi-grid,
+  .tile-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
   .todo-bar { padding: 10px 12px; gap: 8px; }
   .todo-lead { width: 100%; padding-right: 0; }
   .chart { height: 132px; }

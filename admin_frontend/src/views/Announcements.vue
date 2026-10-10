@@ -232,7 +232,7 @@ function fmtDate(s: string): string {
     </SectionCard>
 
     <!-- 公告管理（弹窗）：全文 + 置顶 / 停用 / 删除，每个动作都写清楚影响 -->
-    <el-dialog v-model="manage.visible" title="管理公告" width="min(560px, 92vw)">
+    <el-dialog v-model="manage.visible" title="管理公告" width="560px">
       <div v-if="manage.row" class="manage-body">
         <div class="kv-list">
           <div class="kv-row"><span class="kv-key">标题</span><span class="kv-value">{{ manage.row.title }}</span></div>
@@ -281,7 +281,7 @@ function fmtDate(s: string): string {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑公告' : '发布公告'" width="min(480px, 92vw)">
+    <el-dialog v-model="dialogVisible" :title="editing ? '编辑公告' : '发布公告'" width="480px">
       <el-form label-position="top">
         <el-form-item label="标题"><el-input v-model="form.title" placeholder="公告标题" /></el-form-item>
         <el-form-item label="内容">

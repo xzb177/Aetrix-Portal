@@ -310,14 +310,9 @@ def _prefetch_list_data(db: Session, user_id: int, items: list[em.MediaItem]) ->
 
     # 4) 演员表（v2.51.0：详情页 People 用，一条 IN 查询，不逐条 N+1）
     people_map: dict[int, list] = {}
-    # 集/季没有自己的演员行（_apply_cast 只给 series/movie 写），详情页回退到
-    # 所属剧集的演员表——剧集 id 一并预取，仍是一条 IN 查询。
-    people_ids = set(item_ids) | {
-        i.series_id for i in items
-        if i.series_id and i.item_type in ("episode", "season")}
     people_rows = (
         db.query(em.EmbyPerson)
-        .filter(em.EmbyPerson.item_id.in_(people_ids))
+        .filter(em.EmbyPerson.item_id.in_(item_ids))
         .order_by(em.EmbyPerson.item_id, em.EmbyPerson.sort_order, em.EmbyPerson.id)
         .all()
     )
@@ -579,7 +574,7 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
     if item.date_added:
         dto["DateCreated"] = _iso(item.date_added)
     # 冒烟测试要求详情接口必返这两个字段；无值时给默认值
-    dto["RunTimeTicks"] = _run_time_ticks(item)
+    dto["RunTimeTicks"] = item.duration_ticks or 0
     dto["Container"] = item.container or ""
     if item.bitrate:
         dto["Bitrate"] = item.bitrate
@@ -627,8 +622,7 @@ def _item_dto(item: em.MediaItem, base: str, user_id: int, db: Session, full: bo
                     "SeriesName": item.series.name if item.series else None,
                     "IndexNumber": item.season_number})
     if full:
-        dto["MediaSources"] = [_media_source(item, base, api_key, db, auth_qs,
-                                             synthesize=True)]
+        dto["MediaSources"] = [_media_source(item, base, api_key, db, auth_qs)]
         dto["MediaSourceCount"] = 1
         # 片头片尾标记 → Chapters（对标 StrmAssistant #3：播放器显示"跳过片头"按钮）
         try:
@@ -709,55 +703,24 @@ def _people_dto(item: em.MediaItem, db: Session, prefetch: dict) -> list[dict]:
     没演员的条目都会多一次查询，预取就白做了。
     """
     people_map = prefetch.get("people")
-
-    def _rows_of(item_id):
-        if people_map is not None:
-            return people_map.get(item_id, [])
-        return (
+    if people_map is not None:
+        rows = people_map.get(item.id, [])
+    else:
+        rows = (
             db.query(em.EmbyPerson)
-            .filter(em.EmbyPerson.item_id == item_id)
+            .filter(em.EmbyPerson.item_id == item.id)
             .order_by(em.EmbyPerson.sort_order, em.EmbyPerson.id)
             .all()
         )
-
-    rows = _rows_of(item.id)
-    if not rows and item.item_type in ("episode", "season") and item.series_id:
-        # 集/季自己没有演员 → 用剧集的演员表（Emby 官方单集详情同样展示剧集主演）
-        rows = _rows_of(item.series_id)
     out: list[dict] = []
     for p in rows:
-        # Id：三方客户端（以及 Emby 官方 Web）按 /Items/{Person.Id}/Images/Primary
-        # 拉头像——以前不给 Id，客户端拼不出地址，只能显示首字占位。用行 id（数字串，
-        # 与条目的 32 位 guid 不会撞），media_routes.item_image 能把它解析回演员。
-        entry = {"Name": p.name or "", "Id": str(p.id), "Role": p.role or "",
-                 "Type": "Actor"}
+        entry = {"Name": p.name or "", "Role": p.role or "", "Type": "Actor"}
         if p.image:
-            # 图片也可走 /emby/Persons/{name}/Images/Primary（media_routes），
+            # 图片走 /emby/Persons/{name}/Images/Primary（media_routes），
             # tag 用行 id：稳定且唯一，换头像不影响（图片内容寻址）。
             entry["PrimaryImageTag"] = str(p.id)
         out.append(entry)
     return out
-
-
-def _person_item_dto(person: em.EmbyPerson, db: Session) -> dict:
-    """演员详情（/Items/{Person.Id}）：最小可用的 Person BaseItemDto。
-
-    同名演员只要有一行带头像就给 Primary 标记（取图按名字找，见 media_routes）。
-    """
-    pid = str(person.id)
-    has_img = bool(person.image) or db.query(em.EmbyPerson.id).filter(
-        em.EmbyPerson.name == person.name, em.EmbyPerson.image.isnot(None),
-        em.EmbyPerson.image != "").first() is not None
-    return {
-        "Name": person.name or "", "Id": pid, "ServerId": SERVER_ID,
-        "Type": "Person", "IsFolder": False, "MediaType": "Unknown",
-        "ImageTags": {"Primary": pid} if has_img else {},
-        "BackdropImageTags": [], "ImageBlurHashes": {},
-        "Genres": [], "Tags": [], "People": [], "Studios": [],
-        "ProviderIds": {"Tmdb": person.person_tmdb_id}
-        if (person.person_tmdb_id or "").isdigit() else {},
-        "UserData": _user_data_dto(None, pid),
-    }
 
 
 def _user_data_dto(umd, item_id: str = "") -> dict:
@@ -961,95 +924,19 @@ def _container_of(item: em.MediaItem) -> Optional[str]:
     return None
 
 
-def hide_media_path() -> bool:
-    """EMBY_HIDE_MEDIA_PATH（默认开）：客户端协议响应里不下发服务器上的媒体路径。
-
-    MediaSources[].Path 会被三方客户端直接显示在「媒体信息」里（如
-    ``/strm/剧集/…/xx.strm``），泄露服务器目录结构。播放全走 DirectStreamUrl /
-    /Videos/{item.guid}/stream（按条目 id，不读 Path），省略它不影响播放。
-    管理端 / 扫描等内部逻辑直接读 ``MediaItem.file_path``，不受影响。
-    """
-    return (os.getenv("EMBY_HIDE_MEDIA_PATH", "1") or "1").strip().lower() not in (
-        "0", "false", "no", "off")
-
-
-_CODEC_NORMALIZE = {
-    "h.264": "h264", "h264": "h264", "x264": "h264", "avc": "h264",
-    "h.265": "hevc", "h265": "hevc", "x265": "hevc", "hevc": "hevc",
-    "e-ac3": "eac3", "eac3": "eac3", "ac3": "ac3", "aac": "aac", "flac": "flac",
-    "mp3": "mp3", "dts": "dts", "dts-hd": "dts", "truehd": "truehd",
-}
-
-
-def _norm_codec(codec) -> str:
-    c = str(codec or "").strip().lower()
-    return _CODEC_NORMALIZE.get(c, c)
-
-
-def _synthetic_streams(item: em.MediaItem, existing: list) -> list[dict]:
-    """还没探测到内封轨道时，用文件名/条目级信息拼最小的视频/音频轨（只给详情页）。
-
-    strm / 远程挂载扫描阶段不探测，按需探测又要等用户点开后才跑：这段时间里客户端
-    「媒体信息」只剩空壳。这里用扫描时文件名解析出的分辨率/编码/来源（或探测已写到
-    条目上的宽高编码）拼出视频/音频各一条；**不进 PlaybackInfo**——起播决策仍只看
-    真实探测结果，不拿猜测值影响直放/转码判断。拿不到编码的不拼（不虚报）。
-    """
-    from backend.emby_server import filename_meta
-
-    meta = filename_meta.parse_filename(item.file_path or "") if item.file_path else {}
-    vcodec = _norm_codec(item.video_codec or meta.get("video_codec"))
-    acodec = _norm_codec(item.audio_codec or meta.get("audio_codec"))
-    resolution = item.video_resolution or meta.get("resolution")
-    width, height = item.width or 0, item.height or 0
-    if not (width and height):
-        width, height = filename_meta.resolution_to_wh(resolution)
-    source = item.media_source or meta.get("source") or ""
-    used = {s.get("Index") for s in existing}
-
-    def _free(start: int) -> int:
-        i = start
-        while i in used:
-            i += 1
-        used.add(i)
-        return i
-
-    out: list[dict] = []
-    if vcodec or height:
-        label = " ".join(x for x in (
-            resolution or (f"{height}p" if height else ""),
-            vcodec.upper() if vcodec else "", source) if x)
-        v = {"Index": _free(0), "Type": "Video", "Codec": vcodec or None,
-             "DisplayTitle": label or None, "IsDefault": True, "IsForced": False,
-             "IsExternal": False, "IsInterlaced": False,
-             "Width": width or None, "Height": height or None,
-             "BitRate": item.bitrate or None}
-        if width and height:
-            from math import gcd
-            g = gcd(int(width), int(height)) or 1
-            v["AspectRatio"] = f"{int(width) // g}:{int(height) // g}"
-        out.append(_strip_nulls(v))
-    if acodec:
-        out.append(_strip_nulls({
-            "Index": _free(1), "Type": "Audio", "Codec": acodec,
-            "DisplayTitle": acodec.upper(), "IsDefault": True, "IsForced": False,
-            "IsExternal": False}))
-    return out
-
-
 def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session = None,
-                  auth_qs: str = "", synthesize: bool = False) -> dict:
+                  auth_qs: str = "") -> dict:
     dto = {
         "Id": item.guid,
         "Name": item.name,
-        # 隐藏时置 None，由下面的 _strip_nulls 整个去掉（官方 Path 可空，客户端兼容）
-        "Path": None if hide_media_path() else item.file_path,
+        "Path": item.file_path,
         "Protocol": "File",
         "Type": "Default",
         "Container": _container_of(item),
         "Size": item.size,
         # 兼容修复：RunTimeTicks 必须始终存在（0 = 未知），缺字段时三方客户端
         # 会显示默认的 1 分钟。之前 or None 会被 _strip_nulls 删掉字段。
-        "RunTimeTicks": _run_time_ticks(item),
+        "RunTimeTicks": item.duration_ticks or 0,
         "Bitrate": item.bitrate or None,
         "SupportsDirectPlay": True,
         "SupportsDirectStream": True,
@@ -1075,12 +962,6 @@ def _media_source(item: em.MediaItem, base: str, api_key: str = "", db: Session 
         "DefaultSubtitleStreamIndex": _default_subtitle_index(item),
         "MediaStreams": [_stream_dto(s, base, item, api_key, db, auth_qs) for s in item.streams],
     }
-    if synthesize and not any(
-            (st.get("Type") or "").lower() in ("video", "audio")
-            for st in dto["MediaStreams"]):
-        synth = _synthetic_streams(item, dto["MediaStreams"])
-        if synth:
-            dto["MediaStreams"] = synth + dto["MediaStreams"]
     # 文件名解析的视频信息（v2.49.0）：MediaStreams 为空时客户端「媒体信息」页
     # 也有编码可显示；有流信息时以流为准（这里只是回退）。
     if item.video_codec:
@@ -1125,18 +1006,7 @@ def _require_visible_item(db: Session, user, item_id: str) -> em.MediaItem:
 
 
 def _run_time_ticks(item: em.MediaItem) -> int:
-    """RunTimeTicks：探测出的真实时长优先；没有时用元数据片长（TMDB/豆瓣），
-    集/季再回退到剧集的单集片长；都没有才是 0（字段必须在，见 _media_source 注释）。"""
-    if item.duration_ticks:
-        return int(item.duration_ticks)
-    meta = getattr(item, "metadata_runtime_ticks", 0) or 0
-    if meta:
-        return int(meta)
-    if item.item_type == "episode" and item.series_id:
-        series = item.series
-        if series is not None and (getattr(series, "metadata_runtime_ticks", 0) or 0):
-            return int(series.metadata_runtime_ticks)
-    return 0
+    return item.duration_ticks or 0
 
 
 def _now_playing_dto(session: em.PlaybackSession, item: em.MediaItem, user) -> dict:
@@ -2613,11 +2483,6 @@ def get_item_detail(
     user: models.WebUser = Depends(get_emby_user),
     db: Session = Depends(get_db),
 ):
-    if item_id.isdigit():
-        # People[].Id 是 emby_people 的行 id（数字串）；客户端点演员会来取详情
-        person = db.query(em.EmbyPerson).filter(em.EmbyPerson.id == int(item_id)).first()
-        if person is not None:
-            return _person_item_dto(person, db)
     item = _require_visible_item(db, user, item_id)
     # 按需探测：缺媒体信息的电影/剧集入队，后台限流探测，不阻塞详情页（v2.51.0）
     try:
@@ -3090,9 +2955,6 @@ async def playback_info(
                 pass
     else:
         media_source = cached_source
-    if hide_media_path():
-        # 升级前写进缓存的 media_source 可能还带着 Path（TTL 内），这里兜底去掉
-        media_source.pop("Path", None)
     direct = item.bitrate and item.bitrate <= max_bitrate
     # api_key：只回显 Emby 客户端 token（第三方客户端兼容）。
     # 安全修复 H2：门户 / 管理员 JWT 不再进 URL——网页端只拿短期播放签名（uid/exp/sign）。

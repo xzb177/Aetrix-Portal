@@ -99,62 +99,6 @@ def _has_useful_data(probe: dict) -> bool:
     return bool(probe.get("video_codec") or probe.get("width") or probe.get("duration_ticks"))
 
 
-_STREAM_TYPES = {"video": "Video", "audio": "Audio", "subtitle": "Subtitle"}
-
-
-def has_internal_streams(db, item) -> bool:
-    """条目有没有内封轨道行（外挂字幕不算）。"""
-    return db.query(em.MediaStream.id).filter(
-        em.MediaStream.item_id == item.id,
-        em.MediaStream.is_external.isnot(True),
-    ).first() is not None
-
-
-def replace_streams(db, item, streams) -> int:
-    """用探测结果重建内封轨道（外挂字幕行不动）。返回写入条数。
-
-    以前按需探测只把编码/宽高/时长写到条目上，**从不写轨道行**——scan 阶段不探测的
-    库（strm / 远程挂载）MediaSources[].MediaStreams 永远是空的，客户端「媒体信息」
-    只剩一个路径。口径与 scanner 写轨道一致（列白名单 + 超长截断）。
-    """
-    from backend.emby_server.scanner import _PROBE_STREAM_COLS
-
-    rows = []
-    for s in streams or []:
-        if not isinstance(s, dict):
-            continue
-        stype = _STREAM_TYPES.get(str(s.get("stream_type") or "").lower())
-        if not stype:
-            continue  # data / attachment 轨不给客户端
-        rows.append((stype, s))
-    if not rows:
-        return 0
-    db.query(em.MediaStream).filter(
-        em.MediaStream.item_id == item.id,
-        em.MediaStream.is_external.isnot(True),
-    ).delete(synchronize_session=False)
-    # 外挂字幕的 index 不能撞：内封轨道的 index 就是 ffprobe 的原序号，
-    # 外挂字幕历史上按 max(index)+n 分配；撞了就把外挂的整体挪到内封之后
-    ext = db.query(em.MediaStream).filter(
-        em.MediaStream.item_id == item.id,
-        em.MediaStream.is_external.is_(True),
-    ).order_by(em.MediaStream.stream_index).all()
-    used = set()
-    for stype, s in rows:
-        st = em.MediaStream(item_id=item.id, **{
-            k: v for k, v in s.items() if k in _PROBE_STREAM_COLS})
-        st.stream_type = stype
-        em.sanitize_stream_strings(st)
-        db.add(st)
-        used.add(st.stream_index)
-    if ext and any(e.stream_index in used for e in ext):
-        nxt = max(used) + 1 if used else 0
-        for e in ext:
-            e.stream_index = nxt
-            nxt += 1
-    return len(rows)
-
-
 def write_back(db, item, probe: dict) -> None:
     """把探测结果写回条目（只写非空值，不覆盖已有有效数据）。
 
@@ -181,10 +125,6 @@ def write_back(db, item, probe: dict) -> None:
         item.duration_ticks = ticks
     if probe.get("moov_position"):
         item.moov_position = probe["moov_position"]
-    try:
-        replace_streams(db, item, probe.get("streams"))
-    except Exception as exc:  # noqa: BLE001 — 轨道写失败不影响条目级信息落库
-        logger.warning("按需探测：轨道写库失败 item=%s: %s", getattr(item, "id", "?"), exc)
     item.last_probed_at = datetime.now()
     item.probe_attempts = 0
     item.probe_next_retry_at = None
@@ -242,9 +182,7 @@ def probe_one(db, item) -> str:
     """
     # 1. 先试 JSON 恢复（零探测）
     try:
-        # 老版本落盘的 JSON 没有轨道：恢复了条目级信息但没有轨道行时继续走 ffprobe，
-        # 否则「媒体信息」永远只有编码一行
-        if persist_lib.deserialize(db, item) and has_internal_streams(db, item):
+        if persist_lib.deserialize(db, item):
             return "done"
     except Exception as exc:  # noqa: BLE001 — 恢复失败就走正常探测
         logger.debug("媒体信息 JSON 恢复异常 item=%s，走 ffprobe: %s",

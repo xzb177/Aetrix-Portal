@@ -81,29 +81,6 @@ def _has_media_info(item) -> bool:
     return bool(getattr(item, "video_codec", None) or getattr(item, "width", 0))
 
 
-_STREAM_FIELDS = (
-    "stream_index", "stream_type", "codec", "language", "display_title", "title",
-    "channels", "bit_rate", "frame_rate", "video_range", "profile", "level",
-    "pixel_format", "aspect_ratio", "bit_depth", "sample_rate",
-    "channel_layout", "sample_format",
-)
-
-
-def _streams_payload(db, item) -> list:
-    """内封轨道一并落盘（外挂字幕每次扫描重建，不落）。"""
-    if db is None or getattr(item, "id", None) is None:
-        return []
-    try:
-        from backend.emby_server import models as em
-        rows = db.query(em.MediaStream).filter(
-            em.MediaStream.item_id == item.id,
-            em.MediaStream.is_external.isnot(True),
-        ).order_by(em.MediaStream.stream_index).all()
-    except Exception:  # noqa: BLE001
-        return []
-    return [{k: getattr(r, k, None) for k in _STREAM_FIELDS} for r in rows]
-
-
 def serialize(db, item) -> bool:
     """把条目的媒体信息落盘为 JSON。成功返回 True。
 
@@ -131,7 +108,6 @@ def serialize(db, item) -> bool:
             "container": getattr(item, "container", None),
             "moov_position": getattr(item, "moov_position", None),
         },
-        "streams": _streams_payload(db, item),
     }
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -209,15 +185,6 @@ def deserialize(db, item) -> bool:
         item.container = media["container"]
     if media.get("moov_position") and not getattr(item, "moov_position", None):
         item.moov_position = media["moov_position"]
-    streams = payload.get("streams")
-    if streams and db is not None:
-        try:
-            from backend.emby_server import media_probe as _mp
-            if not _mp.has_internal_streams(db, item):
-                _mp.replace_streams(db, item, streams)
-        except Exception as exc:  # noqa: BLE001 — 轨道恢复失败不影响条目级信息
-            logger.debug("媒体信息 JSON 轨道恢复失败 item=%s: %s",
-                         getattr(item, "id", "?"), exc)
     item.last_probed_at = datetime.now()
     item.probe_attempts = 0
     item.probe_next_retry_at = None
