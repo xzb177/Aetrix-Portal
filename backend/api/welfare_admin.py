@@ -378,6 +378,10 @@ WELFARE_CONFIG_KEYS = {
     # 群抽奖：总开关默认开（关闭后不可新建活动），允许群逗号分隔、空=不限制
     "lottery_enabled": "1",
     "lottery_group_ids": "",
+    # 群抽奖自动开奖：总开关默认开，扫描间隔默认 60 秒（最小 30），开奖通知默认开
+    "lottery_auto_draw_enabled": "1",
+    "lottery_draw_interval_sec": "60",
+    "lottery_notify_winners": "1",
     # 注册后 TG 绑定引导页总开关
     "tg_bind_guide_enabled": "1",
     # 求片 v2：总开关 / 附议 / 附议者入库通知（默认全开）
