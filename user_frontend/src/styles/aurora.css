@@ -679,3 +679,40 @@ h1, h2, .title, .page-title {
 .stat-value, .meta-item, .count, [data-nums] {
   font-variant-numeric: var(--au-nums);
 }
+
+/* ==================== 呼吸式加载（2026-10-10） ==================== */
+/* Wabi 风格：把等待变成体验，opacity 0.4↔1 柔和呼吸，2s 周期 */
+.breathing {
+  animation: breathe 2s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+/* 减弱动效偏好：直接显示，不呼吸 */
+@media (prefers-reduced-motion: reduce) {
+  .breathing {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+
+/* ==================== 药丸标签 Morph（2026-10-10） ==================== */
+/* Moods 风格：选中时药丸"膨胀"，背景色从中心扩散 */
+.pill-morph {
+  transition: transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1),
+              background-color 200ms ease-out,
+              color 200ms ease-out;
+}
+
+.pill-morph:active {
+  transform: scale(0.95);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pill-morph:hover {
+    transform: scale(1.05);
+  }
+}
