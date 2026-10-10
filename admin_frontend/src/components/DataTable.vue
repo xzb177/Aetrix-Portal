@@ -139,6 +139,15 @@ function onRowClick(row: T) {
       </template>
     </el-table-column>
 
+    <!-- 有旧数据时刷新失败：保留旧行，在表尾提示（否则看起来像「刷新成功但没变化」） -->
+    <template v-if="error && rows.length" #append>
+      <div class="dt-stale" role="alert">
+        <AlertTriangle :size="14" />
+        <span class="dt-stale-text">刷新失败，下面是上次的数据：{{ error }}</span>
+        <el-button size="small" text :icon="RotateCw" @click="emit('retry')">重试</el-button>
+      </div>
+    </template>
+
     <template #empty>
       <div v-if="loading" class="dt-table-loading" />
       <EmptyState v-else-if="error" compact :icon="AlertTriangle" title="加载失败" :description="error">
@@ -151,7 +160,16 @@ function onRowClick(row: T) {
   </el-table>
 
   <!-- 手机：卡片列表 -->
-  <div v-else class="dt-cards">
+  <div v-else class="dt-cards" :class="{ 'is-refreshing': loading && rows.length }" :aria-busy="loading">
+    <!-- 已有数据时的刷新：不换骨架（避免列表闪一下），只在顶部给一条细进度 -->
+    <div v-if="loading && rows.length" class="dt-progress" aria-hidden="true" />
+
+    <div v-if="error && rows.length && !loading" class="dt-stale" role="alert">
+      <AlertTriangle :size="14" />
+      <span class="dt-stale-text">刷新失败，下面是上次的数据：{{ error }}</span>
+      <el-button size="small" text :icon="RotateCw" @click="emit('retry')">重试</el-button>
+    </div>
+
     <div v-if="loading && !rows.length" class="dt-loading" aria-busy="true" aria-label="加载中">
       <div v-for="n in 3" :key="n" class="dt-card dt-card--skeleton">
         <span class="au-skeleton dt-sk-title" />
@@ -172,7 +190,10 @@ function onRowClick(row: T) {
         :key="rowId(row, index)"
         class="dt-card"
         :class="{ 'is-clickable': clickable }"
+        :tabindex="clickable ? 0 : undefined"
+        :role="clickable ? 'button' : undefined"
         @click="onRowClick(row)"
+        @keydown.enter.self="onRowClick(row)"
       >
         <div class="dt-title">
           <slot :name="`cell-${titleColumn.key}`" :row="row" :index="index">
@@ -232,6 +253,37 @@ function onRowClick(row: T) {
 }
 
 .dt-card.is-clickable { cursor: pointer; }
+.dt-card.is-clickable:focus-visible { outline: 2px solid var(--au-border-focus); outline-offset: 2px; }
+
+.dt-cards { position: relative; }
+.dt-cards.is-refreshing .dt-card { opacity: 0.6; transition: opacity var(--au-med) var(--au-ease); }
+.dt-progress {
+  position: absolute;
+  top: -6px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: var(--au-r-full);
+  background: var(--au-primary);
+  opacity: 0.7;
+  animation: dt-pulse 1.2s var(--au-ease) infinite;
+}
+@keyframes dt-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.8; } }
+
+.dt-stale {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--au-warning-border);
+  border-radius: var(--au-r-md);
+  background: var(--au-warning-soft);
+  color: var(--au-warning);
+  font-size: 12px;
+}
+.dt-stale-text { flex: 1; min-width: 0; color: var(--au-text-2); overflow-wrap: anywhere; }
+.dt-stale :deep(.el-button) { flex-shrink: 0; }
+:deep(.el-table__append-wrapper) .dt-stale { margin: 8px 12px; }
 .dt-card.is-clickable:active { background: var(--au-surface-2); }
 
 .dt-card--skeleton { display: flex; flex-direction: column; gap: 10px; }

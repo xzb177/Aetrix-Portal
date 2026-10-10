@@ -25,10 +25,10 @@ import {
   CheckCircle2, Route as RealmIcon, Lock, Search, Wallet, Crown, MessageSquareDashed,
   TriangleAlert, ScrollText, Smartphone, MonitorCog, ShieldAlert, Ban, Library, Eye,
   Database, Cloud, Megaphone, Receipt, Trophy, TicketPercent, UserPlus, KeySquare,
-  UserCog, Activity, Heart,
+  UserCog, Activity, Heart, Medal, HardDrive,
   Sun, Moon, MonitorSmartphone,
 } from 'lucide-vue-next'
-import { changePassword, fetchMe } from '@/api/admin'
+import { changePassword } from '@/api/admin'
 import { useAuthStore } from '@/stores/auth'
 import { useRealmStore } from '@/stores/realm'
 import { useBreakpoint } from '@/composables/useBreakpoint'
@@ -151,7 +151,7 @@ const navGroups: NavGroup[] = [
       // 条目级的元数据（重刮 / 绑定 TMDB / 补全进度）与「按库配置」分开一处
       { path: '/metadata-sources', label: '元数据来源', icon: Database },
       { path: '/pan115', label: '115 账号', icon: Cloud },
-      { path: '/gdrive', label: 'Google Drive', icon: Cloud },
+      { path: '/gdrive', label: 'Google Drive', icon: HardDrive },
     ],
   },
   {
@@ -182,7 +182,7 @@ const navGroups: NavGroup[] = [
       { path: '/orders', label: '订单', icon: Receipt },
       { path: '/coupons', label: '优惠券', icon: TicketPercent },
       { path: '/invitations', label: '邀请与积分', icon: UserPlus },
-      { path: '/member-levels', label: '会员等级', icon: Crown },
+      { path: '/member-levels', label: '会员等级', icon: Medal },
       { path: '/codes', label: '码管理', icon: KeySquare },
     ],
   },
@@ -215,7 +215,7 @@ function groupOf(path: string): NavGroup | undefined {
 }
 
 /** 当前路由所在分组 */
-const activeGroup = computed(() => groupOf(route.path))
+const activeGroup = computed(() => groupOf(canonicalPath.value))
 
 const pageTitle = computed(() => (route.meta.title as string) || '管理后台')
 const crumbGroup = computed(() => (activeGroup.value && activeGroup.value.title !== '概览' ? activeGroup.value.title : ''))
@@ -226,9 +226,14 @@ function closeDrawer() {
   drawerOpen.value = false
 }
 
-watch(drawerOpen, (open) => {
+watch([drawerOpen, isTablet], ([open, tablet]) => {
   // 抽屉打开时锁住背景滚动（否则手机上滚的是底下的内容）
-  document.body.style.overflow = open && isTablet.value ? 'hidden' : ''
+  document.body.style.overflow = open && tablet ? 'hidden' : ''
+})
+
+// 窗口从窄屏拉宽到桌面：侧边栏变回常驻，抽屉状态（与背景滚动锁）一并复位
+watch(isTablet, (tablet) => {
+  if (!tablet) closeDrawer()
 })
 
 function onKeydown(e: KeyboardEvent) {
@@ -330,10 +335,21 @@ watch(
   () => closeDrawer(),
 )
 
+/**
+ * 当前路由的「规范路径」：别名（/transfer-115 → /pan115）按命中的路由记录取声明的 path，
+ * 否则走别名进来的页面在侧边栏里没有高亮、也找不到所属分组。
+ */
+const canonicalPath = computed(() => {
+  const rec = route.matched[route.matched.length - 1]
+  const p = rec?.path || route.path
+  return p.startsWith('/') ? p : `/${p}`
+})
+
 /** 当前页判定：仪表盘只认精确的 /，其它入口认自己及子路径 */
 function isActive(path: string): boolean {
-  if (path === '/') return route.path === '/'
-  return route.path === path || route.path.startsWith(`${path}/`)
+  const cur = canonicalPath.value
+  if (path === '/') return cur === '/'
+  return cur === path || cur.startsWith(`${path}/`)
 }
 
 function refreshPage() {
@@ -407,17 +423,12 @@ async function onRealmCommand(cmd: number | string) {
 
 const initial = computed(() => (auth.admin?.username || 'A').charAt(0).toUpperCase())
 
-onMounted(async () => {
+onMounted(() => {
   window.addEventListener('keydown', onKeydown)
   // 当前服（服务端 active_realm_id 是权威来源）；失败不阻断后台，只是顶栏不显示服名
   realm.load().catch(() => undefined)
-  // 进入后台时校正一次管理员身份（令牌失效 / 权限被回收时会被拦截器送回登录页）
-  try {
-    const me = await fetchMe()
-    if (auth.token) auth.setSession(auth.token, me)
-  } catch {
-    /* 拦截器已处理 */
-  }
+  // 管理员身份已由路由守卫里的 auth.ensureSession() 向 /auth/me 核对过（一次页面加载一次），
+  // 这里不再重复请求一遍
 })
 
 onUnmounted(() => {
@@ -469,6 +480,7 @@ onUnmounted(() => {
             class="nav-item"
             :class="{ active: isActive(item.path) }"
             :aria-current="isActive(item.path) ? 'page' : undefined"
+            @click="closeDrawer"
           >
             <component :is="item.icon" :size="16" class="nav-icon" />
             <span class="nav-label">{{ item.label }}</span>
@@ -604,7 +616,7 @@ onUnmounted(() => {
       @run="onPaletteRun"
     />
 
-    <el-dialog v-model="pwdVisible" title="修改密码" width="420px">
+    <el-dialog v-model="pwdVisible" title="修改密码" width="min(420px, 92vw)">
       <el-form label-position="top" @submit.prevent>
         <el-form-item label="当前密码">
           <el-input v-model="pwdForm.old_password" type="password" show-password placeholder="请输入当前密码" />

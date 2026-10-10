@@ -46,8 +46,12 @@ import DataTable from '@/components/DataTable.vue'
 import type { DataColumn } from '@/components/DataTable.vue'
 
 const loading = ref(false)
-/** 积分流水加载失败（邀请记录 / 总览各自兜底为空，不影响主表） */
+/** 积分流水单独的 loading：翻页 / 切类型只刷流水，不让邀请记录表跟着闪 */
+const logsLoading = ref(false)
+/** 积分流水加载失败（邀请记录 / 总览各自兜底，不影响主表） */
 const logsError = ref(false)
+/** 邀请记录读取失败：给出可重试的错误态，而不是假装「暂无邀请记录」 */
+const invError = ref(false)
 const stats = ref<EconomyStats | null>(null)
 
 // ===== 邀请记录 =====
@@ -237,25 +241,51 @@ const rebateTotal = computed(() =>
   logs.value.filter((l) => l.type === 'rebate').reduce((s, l) => s + l.amount, 0),
 )
 
-async function load() {
+/** 邀请记录 + 经济总览：与流水的翻页 / 类型筛选无关，不随翻页重复请求 */
+async function loadOverview() {
   loading.value = true
-  logsError.value = false
+  invError.value = false
   try {
-    const [inv, log, econ] = await Promise.all([
-      fetchInvitations({ limit: 100 }).catch(() => ({ records: [] })),
-      fetchPointsLogs({ limit: 30, offset: (logPage.value - 1) * 30, type_filter: logTypeFilter.value || undefined }),
+    const [inv, econ] = await Promise.all([
+      fetchInvitations({ limit: 100 }).catch(() => null),
       fetchEconomyStats().catch(() => null),
     ])
-    invitations.value = inv.records
-    logs.value = log.logs
-    logTotal.value = log.total
-    stats.value = econ
-  } catch {
-    // 错误提示由 HTTP 拦截器统一处理；这里只记下失败，给出重试入口
-    logsError.value = true
+    if (inv) invitations.value = inv.records
+    else invError.value = true
+    if (econ) stats.value = econ
   } finally {
     loading.value = false
   }
+}
+
+/** 请求序号：连续翻页 / 切类型时只采纳最后一次请求 */
+let logsSeq = 0
+
+/** 积分流水：翻页、切类型只拉这一个接口 */
+async function loadLogs() {
+  const seq = ++logsSeq
+  logsLoading.value = true
+  logsError.value = false
+  try {
+    const log = await fetchPointsLogs({
+      limit: 30,
+      offset: (logPage.value - 1) * 30,
+      type_filter: logTypeFilter.value || undefined,
+    })
+    if (seq !== logsSeq) return
+    logs.value = log.logs
+    logTotal.value = log.total
+  } catch {
+    if (seq !== logsSeq) return
+    // 错误提示由 HTTP 拦截器统一处理；这里只记下失败，给出重试入口
+    logsError.value = true
+  } finally {
+    if (seq === logsSeq) logsLoading.value = false
+  }
+}
+
+async function load() {
+  await Promise.all([loadOverview(), loadLogs()])
 }
 
 async function openAdjust() {
@@ -563,7 +593,6 @@ onMounted(reloadAll)
             placeholder="搜邀请码"
             clearable
             @change="loadCodes"
-            @clear="loadCodes"
           >
             <template #prefix><Search :size="14" /></template>
           </el-input>
@@ -625,7 +654,10 @@ onMounted(reloadAll)
     <div class="ledger-grid">
       <!-- 邀请记录 -->
       <SectionCard id="invite-records" title="邀请记录" :icon="UserPlus" :meta="`最新 ${invitations.length} 条`" flush>
-        <DataTable class="flush-table" :rows="invitations" :columns="inviteColumns" :loading="loading" empty="暂无邀请记录">
+        <EmptyState v-if="invError && !invitations.length" :icon="AlertTriangle" title="邀请记录加载失败" compact>
+          <template #actions><el-button size="small" :loading="loading" @click="loadOverview">重试</el-button></template>
+        </EmptyState>
+        <DataTable v-else class="flush-table" :rows="invitations" :columns="inviteColumns" :loading="loading" empty="暂无邀请记录">
           <template #cell-inviter="{ row }">
             <span class="user-name">{{ row.inviter }}</span>
           </template>
@@ -649,16 +681,16 @@ onMounted(reloadAll)
             placeholder="全部类型"
             clearable
             size="small"
-            @change="logPage = 1; load()"
+            @change="logPage = 1; loadLogs()"
           >
             <el-option v-for="(label, key) in TYPE_LABELS" :key="key" :label="label" :value="key" />
           </el-select>
         </template>
 
         <EmptyState v-if="logsError && !logs.length" :icon="AlertTriangle" title="积分流水加载失败" compact>
-          <template #actions><el-button size="small" :loading="loading" @click="load">重试</el-button></template>
+          <template #actions><el-button size="small" :loading="logsLoading" @click="loadLogs">重试</el-button></template>
         </EmptyState>
-        <DataTable v-else class="flush-table" :rows="logs" :columns="logColumns" :loading="loading" empty="暂无积分流水">
+        <DataTable v-else class="flush-table" :rows="logs" :columns="logColumns" :loading="logsLoading" empty="暂无积分流水">
           <template #cell-username="{ row }">
             <span class="user-name">{{ row.username }}</span>
           </template>
@@ -691,7 +723,7 @@ onMounted(reloadAll)
             layout="prev, pager, next"
             size="small"
             class="card-pager"
-            @current-change="load"
+            @current-change="loadLogs"
           />
         </template>
       </SectionCard>
@@ -710,7 +742,7 @@ onMounted(reloadAll)
           :loading="auditSaving"
           active-text="开启"
           inactive-text="关闭"
-          @update:model-value="(v: boolean) => toggleAudit(v)"
+          @update:model-value="(v: string | number | boolean) => toggleAudit(v === true)"
         />
         <span class="faint">审计总开关（points_audit_enabled）</span>
       </div>
@@ -824,7 +856,7 @@ onMounted(reloadAll)
     </SectionCard>
 
     <!-- 调整积分对话框 -->
-    <el-dialog v-model="adjustVisible" title="手动调整用户积分" width="440px">
+    <el-dialog v-model="adjustVisible" title="手动调整用户积分" width="min(440px, 92vw)">
       <el-form label-position="top">
         <el-form-item label="用户">
           <el-select
@@ -864,7 +896,7 @@ onMounted(reloadAll)
     </el-dialog>
 
     <!-- 批量生成邀请码 -->
-    <el-dialog v-model="genVisible" title="批量生成邀请码" width="460px">
+    <el-dialog v-model="genVisible" title="批量生成邀请码" width="min(460px, 92vw)">
       <el-form label-position="top">
         <el-form-item label="归属用户">
           <el-select
@@ -906,7 +938,7 @@ onMounted(reloadAll)
     </el-dialog>
 
     <!-- 改单张邀请码 -->
-    <el-dialog v-model="editVisible" :title="`编辑邀请码 ${editForm.code}`" width="460px">
+    <el-dialog v-model="editVisible" :title="`编辑邀请码 ${editForm.code}`" width="min(460px, 92vw)">
       <el-form label-position="top">
         <el-form-item label="每码可用次数">
           <el-input-number v-model="editForm.max_uses" :min="0" :max="100000" style="width: 100%" />
@@ -931,7 +963,7 @@ onMounted(reloadAll)
     </el-dialog>
 
     <!-- 邀请规则设置（页内弹窗） -->
-    <el-dialog v-model="ruleVisible" title="邀请规则设置" width="480px">
+    <el-dialog v-model="ruleVisible" title="邀请规则设置" width="min(480px, 92vw)">
       <div v-if="ruleLoading" class="rule-loading">
         <el-skeleton :rows="6" animated />
       </div>
@@ -1092,7 +1124,7 @@ onMounted(reloadAll)
 .audit-verify .f-select { width: 260px; }
 .audit-result { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 10px; font-size: 13px; }
 .audit-meta { color: var(--au-text-2); }
-.audit-broken { color: var(--au-danger, #e5484d); }
+.audit-broken { color: var(--au-danger); }
 
 @media (max-width: 1000px) {
   .ledger-grid { grid-template-columns: minmax(0, 1fr); }

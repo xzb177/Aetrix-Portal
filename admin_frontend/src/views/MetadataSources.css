@@ -130,6 +130,25 @@
   flex-wrap: wrap;
 }
 
+/* 单个带标签的数值设置（豆瓣请求间隔等）：标签 · 控件 · 说明，窄屏自动换行；
+   以前没有这条样式，三段挤在一行里没有间距 */
+.ms-field {
+  display: flex;
+  align-items: center;
+  gap: 6px 10px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+.ms-field-label {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--au-text-2);
+}
+.ms-field .ms-hint {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
 .ms-results {
   margin-top: 2px;
   display: flex;
