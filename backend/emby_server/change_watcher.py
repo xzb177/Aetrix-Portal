@@ -171,8 +171,9 @@ def _diff_against_snapshot(db: Session, library_id: int, source_key: str,
     - 已见且未变 → 只更新 last_seen_at。
     - baseline_if_empty=True 且该源快照完全为空（首次建基线）→ 全部插入但
       返回 []（避免部署后第一轮把全库当新增触发扫描风暴）。调用方按
-      「source_state 行是否存在」传 baseline_if_empty：只要这个源成功检查过
-      一次就不再建基线。
+      「这个源是否从没成功检查过」传 baseline_if_empty（state 行不存在或
+      last_ok_at 为空——注意失败也会建 state 行）：成功检查过一次之后新文件
+      必须上报。
       注意：entries 本身为空时不算「建基线」——空目录首轮无行可插，
       若此时返回基线语义，之后新文件进来会因「快照仍为空」被再次当成基线
       静默吞掉（新库的第一个 .strm 永远触发不了扫描）。空 entries 直接走
@@ -496,11 +497,14 @@ def _find_new_videos_remote(db: Session, library_id: int, mount_id: int,
     with mount_lib.remote_io_purpose(mount_lib.PURPOSE_CHASE):
         entries = _walk_files(provider, base, _REMOTE_WALK_DEPTH,
                               REMOTE_SNAPSHOT_MAX_ENTRIES, exts or _tracked_exts(db))
-    # 基线只建一次：state 行不存在 = 这个源从没检查过（本地路径同理，见
-    # _find_new_videos_local）。检查过一次之后新文件必须上报。
+    # 基线只建一次：从没**成功**检查过才建基线。注意失败也会建 state 行
+    # （consec_failures+1 但 last_ok_at 为空），所以不能只看行是否存在——
+    # 否则首轮失败、次轮成功时会把全库当新增上报（扫描风暴）。
+    # 成功检查过一次之后新文件必须上报。
     changed = _diff_against_snapshot(db, library_id, skey,
                                      [(e.rel, e.size, e.mod_ts) for e in entries],
-                                     baseline_if_empty=state is None)
+                                     baseline_if_empty=(state is None or
+                                                        state.last_ok_at is None))
     _touch_source_state(db, skey, True, snapshot_now=True)
     return ([_mount_url(mount_id, r) for r in changed], len(entries))
 
@@ -529,12 +533,15 @@ def _find_new_videos_local(db: Session, library_id: int, base: str,
                 continue
             rel = os.path.relpath(p, base).replace(os.sep, "/")
             entries.append(("/" + rel, st.st_size, st.st_mtime))
-        # 基线只建一次：state 行不存在 = 这个源从没成功检查过。只要检查过一次
-        # （哪怕当时是空目录），之后的新文件都必须上报——否则空目录首轮无行可插，
-        # 下一轮「快照仍为空」会被再次当成基线静默吞掉，新库的第一个 .strm
-        # 永远触发不了扫描。
+        # 基线只建一次：从没**成功**检查过才建基线。注意失败也会建 state 行
+        # （_touch_source_state(ok=False) 是 get-or-create，last_ok_at 为空），
+        # 所以不能只看行是否存在——否则首轮失败、次轮成功时会把全库当新增
+        # 上报（扫描风暴）。只要成功检查过一次（哪怕当时是空目录），之后的新
+        # 文件都必须上报——否则空目录首轮无行可插，下一轮「快照仍为空」会被
+        # 再次当成基线静默吞掉，新库的第一个 .strm 永远触发不了扫描。
         changed = _diff_against_snapshot(db, library_id, base, entries,
-                                         baseline_if_empty=state is None)
+                                         baseline_if_empty=(state is None or
+                                                            state.last_ok_at is None))
         _touch_source_state(db, base, True)
         return ([os.path.join(base, r.lstrip("/")) for r in changed], len(entries))
     except Exception as exc:
