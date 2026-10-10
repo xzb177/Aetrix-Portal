@@ -22,7 +22,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
-  CalendarCheck, Coins, Globe, KeyRound, Mail, MapPin, Network, Palette, RefreshCw, Save,
+  CalendarCheck, Coins, Flame, Globe, KeyRound, Mail, MapPin, Network, Palette, RefreshCw, Save,
   ShieldCheck, Send, Sparkles, TicketCheck, UserPlus, Wallet, ShieldAlert, Lock, Zap,
   DatabaseBackup, HardDrive, History, TriangleAlert, Eraser, SlidersHorizontal, PlugZap,
 } from 'lucide-vue-next'
@@ -226,6 +226,49 @@ const GROUPS: Group[] = [
       },
       { key: 'promotion_reward_amount', label: '推广奖励·余额数值', type: 'int', suffix: '积分', hint: '类型为「余额」时生效；0 = 不发' },
       { key: 'promotion_reward_days', label: '推广奖励·有效期天数', type: 'int', suffix: '天', hint: '类型为「有效期」时生效；0 = 不发' },
+    ],
+  },
+  {
+    id: 'prewarm',
+    title: '播放预热',
+    desc: 'PlaybackInfo 请求时预读文件头（默认 10MB），让起播更快；并发超限直接跳过不排队、不抢播放链路',
+    icon: Flame,
+    fields: [
+      { key: 'playback_prewarm_enabled', label: '启用预热', type: 'bool' },
+      {
+        key: 'playback_prewarm_bytes',
+        label: '预热大小',
+        type: 'int',
+        suffix: '字节',
+        hint: '每次预读的字节数，默认 10485760（10MB）',
+      },
+      {
+        key: 'playback_prewarm_max_concurrent',
+        label: '最大并发',
+        type: 'int',
+        hint: '同时预热的线程上限，超限直接跳过、不排队，默认 4',
+      },
+      {
+        key: 'playback_prewarm_dedup_seconds',
+        label: '去重窗口',
+        type: 'int',
+        suffix: '秒',
+        hint: '同一文件在此时间内只预热一次，默认 300；填 0 关闭去重',
+      },
+      {
+        key: 'playback_prewarm_timeout_seconds',
+        label: '超时',
+        type: 'int',
+        suffix: '秒',
+        hint: '单次预热超过此时长自动放弃，默认 30',
+      },
+      {
+        key: 'playback_prewarm_chunk_bytes',
+        label: '分块大小',
+        type: 'int',
+        suffix: '字节',
+        hint: '单次读取块大小，越小对播放链路越温和，默认 262144（256KB）',
+      },
     ],
   },
   {

@@ -41,6 +41,7 @@ from backend.emby_server import dedup as dedup_lib
 from backend.emby_server import models as em
 from backend.emby_server import mounts as mount_lib
 from backend.emby_server import play_sign
+from backend.emby_server import playback_prewarm
 from backend.emby_server import soft_delete
 from backend.emby_server import title_beautify
 from backend.emby_server import missing_episodes as _missing_episodes
@@ -3002,15 +3003,9 @@ async def playback_info(
     try:
         is_pb = request.query_params.get("IsPlayback", "false").lower() == "true"
         if is_pb and item.file_path:
-            import threading
-            _wp = item.file_path
-            def _wf():
-                try:
-                    with open(_wp, "rb") as fh:
-                        fh.read(10485760)
-                except Exception:
-                    pass
-            threading.Thread(target=_wf, daemon=True).start()
+            # 点播即预热（默认 10MB，可配）：并发上限/去重/超时/指标全在
+            # playback_prewarm 里；DB 读走 run_db（async 纪律），线程只读文件。
+            await run_db(playback_prewarm.maybe_prewarm, db, item.file_path)
     except Exception:
         pass
 

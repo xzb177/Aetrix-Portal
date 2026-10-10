@@ -212,6 +212,14 @@ ECONOMY_CONFIG_KEYS = {
     "vitality_limit_threshold": "int", "vitality_point_cost": "int",
     # C3 流水审计：积分流水 hash 链总开关（默认开；关闭后新流水不写 hash）
     "points_audit_enabled": "bool",
+    # 播放预热（点播即读文件头）：总开关/预热字节/并发上限/去重窗口/超时/分块
+    # （backend/emby_server/playback_prewarm.py；60 秒热缓存，保存后写时失效）
+    "playback_prewarm_enabled": "bool",
+    "playback_prewarm_bytes": "int",
+    "playback_prewarm_max_concurrent": "int",
+    "playback_prewarm_dedup_seconds": "int",
+    "playback_prewarm_timeout_seconds": "int",
+    "playback_prewarm_chunk_bytes": "int",
 }
 
 
@@ -280,6 +288,11 @@ def economy_update_settings(
     if _vitality_keys:
         from backend.integrations import store as _store2
         _store2.invalidate(*_vitality_keys)
+    # 播放预热：同上（同一进程写时失效，跨进程 60 秒 TTL）
+    _prewarm_keys = [k for k in changed if k.startswith("playback_prewarm_")]
+    if _prewarm_keys:
+        from backend.integrations import store as _store3
+        _store3.invalidate(*_prewarm_keys)
     _audit(db, current_admin, "economy_update_settings", "system", None, changed)
     db.commit()
     return {"success": True, "changed": list(changed.keys())}
