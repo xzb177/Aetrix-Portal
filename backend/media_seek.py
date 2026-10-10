@@ -342,9 +342,109 @@ def seasons_for(tmdb_id: str) -> list[dict]:
     return seasons
 
 
+# ==================== v2：总开关 / 附议 / 附议者通知 ====================
+# 全部可配置（WELFARE_CONFIG_KEYS + config_self_heal 注册），脏值回默认值。
+
+CONFIG_ENABLED = "media_seek_enabled"
+CONFIG_VOTE_ENABLED = "media_seek_vote_enabled"
+CONFIG_NOTIFY_VOTERS = "media_seek_notify_voters"
+
+
+def _get_bool(db: Session, key: str, default: bool = True) -> bool:
+    """读布尔配置：'1'/'true' 为开，'0'/'false' 为关；缺省/脏值回 default"""
+    cfg = db.query(models.SystemConfig).filter(
+        models.SystemConfig.key == key
+    ).first()
+    raw = str(cfg.value).strip().lower() if cfg and cfg.value is not None else ""
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+def seek_enabled(db: Session) -> bool:
+    """求片总开关：关闭后用户不能提交求片（只读端点不受影响）"""
+    return _get_bool(db, CONFIG_ENABLED, True)
+
+
+def vote_enabled(db: Session) -> bool:
+    """附议开关：关闭后附议端点 403"""
+    return _get_bool(db, CONFIG_VOTE_ENABLED, True)
+
+
+def notify_voters_enabled(db: Session) -> bool:
+    """入库通知附议者开关：标记 completed 时是否也通知附议过的用户"""
+    return _get_bool(db, CONFIG_NOTIFY_VOTERS, True)
+
+
+def toggle_vote(db: Session, user, request_id: int) -> dict:
+    """附议 / 取消附议一条求片。返回 {"voted": bool, "vote_count": int}
+
+    规则：
+    - 附议开关关闭 → ValueError（路由转 403）
+    - 求片不存在 → ValueError
+    - 只能对 pending 的求片附议
+    - 不能给自己的求片附议
+    - 已附议 → 取消；未附议 → 附议（vote_count 行锁更新，防并发）
+    """
+    if not vote_enabled(db):
+        raise ValueError("附议功能已关闭")
+    # 行锁读求片行：校验与 vote_count 更新在同一行锁下，并发附议不丢数
+    req = db.query(models.MovieRequest).filter(
+        models.MovieRequest.id == request_id
+    ).with_for_update().first()
+    if req is None:
+        raise ValueError("求片不存在")
+    if req.status != "pending":
+        raise ValueError("该求片已处理，不能附议")
+    if req.user_id == user.id:
+        raise ValueError("不能给自己的求片附议")
+
+    existing = db.query(models.MovieRequestVote).filter(
+        models.MovieRequestVote.request_id == request_id,
+        models.MovieRequestVote.user_id == user.id,
+    ).first()
+
+    if existing:
+        db.delete(existing)
+        req.vote_count = max(0, (req.vote_count or 0) - 1)
+        voted = False
+    else:
+        db.add(models.MovieRequestVote(request_id=request_id, user_id=user.id))
+        req.vote_count = (req.vote_count or 0) + 1
+        voted = True
+    db.commit()
+    return {"voted": voted, "vote_count": int(req.vote_count or 0)}
+
+
+def voter_ids(db: Session, request_id: int, exclude_user_id=None) -> list:
+    """一条求片的所有附议者 user_id（可排除求片者本人）"""
+    q = db.query(models.MovieRequestVote.user_id).filter(
+        models.MovieRequestVote.request_id == request_id
+    )
+    if exclude_user_id is not None:
+        q = q.filter(models.MovieRequestVote.user_id != exclude_user_id)
+    return [row[0] for row in q.all()]
+
+
+def voted_ids(db: Session, user_id: int, request_ids: list) -> set:
+    """当前用户在给定求片 id 列表里附议过哪些（用户端列表打标用，一次查询）"""
+    if not request_ids:
+        return set()
+    rows = db.query(models.MovieRequestVote.request_id).filter(
+        models.MovieRequestVote.user_id == user_id,
+        models.MovieRequestVote.request_id.in_(request_ids),
+    ).all()
+    return {row[0] for row in rows}
+
+
 __all__ = [
     "ACTIVE_STATUSES",
     "CONFIG_DAILY_LIMIT",
+    "CONFIG_ENABLED",
+    "CONFIG_NOTIFY_VOTERS",
+    "CONFIG_VOTE_ENABLED",
     "DEFAULT_DAILY_LIMIT",
     "MAX_SEASON_COUNT",
     "MAX_SEASON_NUMBER",
@@ -356,9 +456,15 @@ __all__ = [
     "library_hit",
     "normalize_season",
     "normalize_tmdb_id",
+    "notify_voters_enabled",
     "quota",
     "search_candidates",
     "season_label",
     "seasons_for",
+    "seek_enabled",
+    "toggle_vote",
     "used_today",
+    "vote_enabled",
+    "voted_ids",
+    "voter_ids",
 ]

@@ -562,7 +562,7 @@ export const closeTicket = (id: number) => post<{ success: boolean }>(`/tickets/
 // ==================== 求片 ====================
 
 /** 求片清单；`realm_id=0` = 全部服，不传 = 当前服 */
-export const fetchMediaSeeks = (params: { status_filter?: string; realm_id?: number } = {}) =>
+export const fetchMediaSeeks = (params: { status_filter?: string; realm_id?: number; order?: string } = {}) =>
   get<MediaSeekRow[]>('/media-seek', params)
 
 export const updateMediaSeek = (id: number, data: { status: string; admin_note?: string }) =>

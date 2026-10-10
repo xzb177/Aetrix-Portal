@@ -354,6 +354,13 @@ def collect_system_config_defaults() -> list[tuple[str, str, str]]:
                   "公益服用户每月求片上限"))
     items.append((media_seek.CONFIG_MONTHLY_PAID, str(media_seek.DEFAULT_MONTHLY_PAID),
                   "付费用户每月求片上限"))
+    # v2 求片：总开关 / 附议 / 附议者通知（全部可配置，默认开）
+    items.append((media_seek.CONFIG_ENABLED, "1",
+                  "求片总开关（关闭后用户不能提交求片）"))
+    items.append((media_seek.CONFIG_VOTE_ENABLED, "1",
+                  "求片附议开关（用户可对他人的求片附议+1）"))
+    items.append((media_seek.CONFIG_NOTIFY_VOTERS, "1",
+                  "求片入库时是否通知附议者"))
 
     # 7.8 防共享（跨城市轨迹 + 同播检测）：两档都默认 off = 与升级前完全一致，
     # enforce（自动停用 / 自动拦截）只能由管理员显式选，绝不自动生效

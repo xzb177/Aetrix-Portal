@@ -377,6 +377,10 @@ WELFARE_CONFIG_KEYS = {
     "lottery_group_ids": "",
     # 注册后 TG 绑定引导页总开关
     "tg_bind_guide_enabled": "1",
+    # 求片 v2：总开关 / 附议 / 附议者入库通知（默认全开）
+    "media_seek_enabled": "1",
+    "media_seek_vote_enabled": "1",
+    "media_seek_notify_voters": "1",
 # M1 群发言积分：总开关默认关闭，服主手动开启
     "chat_points_enabled": "false",
     # C2 积分转账：总开关默认开启，手续费/限额可配（0=不收/不限）

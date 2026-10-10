@@ -548,6 +548,10 @@ export interface MediaSeekRequest {
   realm_id?: number | null
   realm_name?: string
   created_at: string
+  /** v2 附议数 */
+  vote_count?: number
+  /** v2 当前用户是否已附议 */
+  voted?: boolean
 }
 
 /** TMDB 搜索候选（求片表单用）：in_library=true 的已在库，直接看不用求 */
@@ -626,6 +630,29 @@ export const mediaSeekApi = {
 
   /** 撤回尚未处理的求片 */
   withdraw: (requestId: number) => api.delete(`/api/user/media-seek/${requestId}`),
+
+  /** v2 附议 / 取消附议（每人每条只能附议一次，不能给自己附议） */
+  vote: (requestId: number) =>
+    api.post<never, { success: boolean; voted: boolean; vote_count: number }>(
+      `/api/user/media-seek/${requestId}/vote`,
+    ),
+
+  /** v2 热门求片：所有人 pending 的求片（匿名），按附议数排序 */
+  hot: () =>
+    api.get<never, { requests: HotMediaSeekRequest[] }>('/api/user/media-seek/hot'),
+}
+
+/** v2 热门求片行（匿名展示） */
+export interface HotMediaSeekRequest {
+  id: number
+  movie_name: string
+  year?: string | null
+  type?: string | null
+  season_label?: string
+  vote_count: number
+  voted: boolean
+  mine: boolean
+  created_at: string
 }
 
 // ==================== 订阅 API（backend/api/user.py，管理员在后台授予） ====================

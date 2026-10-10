@@ -8,7 +8,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { ArrowLeftRight, Bot, Coins, Gift, MessageCircle, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
+import { ArrowLeftRight, Bot, Coins, Gift, MessageCircle, MessageSquareDashed, RefreshCw, Save, Send, Settings2, Wallet } from 'lucide-vue-next'
 import { PageHeader, SectionCard } from '@/components/ui'
 import { fetchWelfareConfig, saveWelfareConfig } from '@/api/welfare'
 
@@ -103,6 +103,17 @@ const chatPointsEnabled = computed({
   get: () => form.value['chat_points_enabled'] === 'true',
   set: (v: boolean) => { form.value['chat_points_enabled'] = v ? 'true' : 'false' },
 })
+
+// v2 求片：总开关 / 附议 / 附议者通知（'1' 为开）
+function seekBoolSwitch(key: string) {
+  return computed({
+    get: () => (form.value[key] ?? '1') === '1',
+    set: (v: boolean) => { form.value[key] = v ? '1' : '0' },
+  })
+}
+const mediaSeekEnabled = seekBoolSwitch('media_seek_enabled')
+const mediaSeekVoteEnabled = seekBoolSwitch('media_seek_vote_enabled')
+const mediaSeekNotifyVoters = seekBoolSwitch('media_seek_notify_voters')
 
 async function load() {
   loading.value = true
@@ -279,6 +290,27 @@ onMounted(load)
             <el-input v-model="form[f.key]" style="width: 160px" />
             <span class="field-suffix">{{ f.suffix }}</span>
             <span class="field-hint">{{ f.hint }}</span>
+          </el-form-item>
+        </el-form>
+      </SectionCard>
+
+      <SectionCard
+        title="求片 v2"
+        :icon="MessageSquareDashed"
+        description="求片总开关、附议与附议者通知，默认全开"
+      >
+        <el-form label-width="120px" class="config-form">
+          <el-form-item label="求片总开关">
+            <el-switch v-model="mediaSeekEnabled" />
+            <span class="field-hint">关闭后用户不能提交求片（只读列表不受影响），默认开启</span>
+          </el-form-item>
+          <el-form-item label="附议开关">
+            <el-switch v-model="mediaSeekVoteEnabled" />
+            <span class="field-hint">用户可对他人的求片附议 +1，默认开启</span>
+          </el-form-item>
+          <el-form-item label="通知附议者">
+            <el-switch v-model="mediaSeekNotifyVoters" />
+            <span class="field-hint">求片入库时除求片者外也通知附议者，默认开启</span>
           </el-form-item>
         </el-form>
       </SectionCard>

@@ -408,6 +408,8 @@ export interface MediaSeekRow {
   push_target: string | null
   push_status: string | null
   push_message: string | null
+  /** v2 附议数 */
+  vote_count?: number
   pushed_at: string | null
 }
 

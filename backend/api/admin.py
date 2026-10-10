@@ -1126,6 +1126,7 @@ async def close_ticket(
 def get_media_seeks(
     status_filter: Optional[str] = None,
     realm_id: Optional[int] = None,
+    order: Optional[str] = None,
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
@@ -1133,6 +1134,8 @@ def get_media_seeks(
 
     求片本身是"这部片要进哪个服的库"，用户提交时选的服会被记下来；
     推送出口（MoviePilot / qB）是全局共享一套，所以推的时候不分服。
+
+    v2：``order=hot`` 按附议数降序（热度排序），否则按提交时间降序。
     """
     scope_id = None if realm_id == 0 else (realm_id or realms.active_realm_id(db))
     query = realms.scope_inclusive(db.query(models.MovieRequest),
@@ -1145,6 +1148,13 @@ def get_media_seeks(
         query = query.filter(models.MovieRequest.status != "withdrawn")
 
     requests = query.order_by(models.MovieRequest.created_at.desc()).limit(200).all()
+    if order == "hot":
+        # v2 热度排序：附议数高的在前（附议数相同按提交时间）
+        requests = sorted(
+            requests,
+            key=lambda r: ((r.vote_count or 0), r.created_at),
+            reverse=True,
+        )[:200]
     realm_names = {r.id: r.name for r in realms.list_realms(db)}
 
     result = []
@@ -1175,6 +1185,8 @@ def get_media_seeks(
             "push_status": req.push_status,
             "push_message": req.push_message,
             "pushed_at": req.pushed_at.isoformat() if req.pushed_at else None,
+            # v2 附议数
+            "vote_count": req.vote_count or 0,
         })
     return result
 
@@ -1370,6 +1382,10 @@ def _mark_media_seek_sync(db: Session, admin_id: int, request_id: int, force: bo
     media_request.status = "completed"
     media_request.emby_item_id = str(getattr(match, "guid", "") or "") or None
     media_request.updated_at = datetime.now()
+    # v2：附议者名单（通知用；开关关闭则为空）
+    voter_list = []
+    if media_seek.notify_voters_enabled(db):
+        voter_list = media_seek.voter_ids(db, request_id, exclude_user_id=media_request.user_id)
     _audit(db, admin_id, "mark_media_seek_in_library", "media_seek", request_id,
            {"matched": match is not None, "force": force,
             "item_type": getattr(match, "item_type", None)})
@@ -1380,6 +1396,7 @@ def _mark_media_seek_sync(db: Session, admin_id: int, request_id: int, force: bo
         "season": media_request.season,
         "item_id": media_request.emby_item_id,
         "matched": match is not None,
+        "voter_ids": voter_list,
     }
 
 
@@ -1413,6 +1430,21 @@ async def mark_media_seek_in_library(
         related_id=request_id,
         from_admin_id=admin_id,
     )
+    # v2：附议者也收到入库通知（开关可关；失败不影响主流程）
+    for voter_id in info.get("voter_ids") or []:
+        try:
+            await notify_admin_event(
+                event_type=AdminEvent.MEDIA_SEEK_COMPLETED,
+                user_id=voter_id,
+                title="求片已入库",
+                content=(f"您附议的《{info['movie_name']}》"
+                         + (f"（{season_text}）" if season_text else "")
+                         + "已入库，可以直接观看了。"),
+                related_id=request_id,
+                from_admin_id=admin_id,
+            )
+        except Exception:  # noqa: BLE001 — 通知失败不应影响标记入库
+            logger.warning("求片入库通知附议者失败（user_id=%s）", voter_id)
     return {
         "success": True,
         "matched": info["matched"],
