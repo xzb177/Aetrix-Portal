@@ -12,8 +12,7 @@
  * 邀请码的筛选在左、「批量生成」在右；积分流水分页收进卡片底栏；
  * 推广奖励的配置条改成发丝线分隔的表单行；三处台账加载失败都有可重试的错误态。
  */
-import { computed, onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   AlertTriangle, Coins, Gift, HandCoins, History, Megaphone, Plus, QrCode, RefreshCw, Search, Settings, ShieldCheck, UserPlus,
@@ -116,6 +115,95 @@ async function handleVerify() {
     verifyResult.value = await verifyPointsAudit(verifyUserId.value)
   } finally {
     verifyLoading.value = false
+  }
+}
+
+// ===== 邀请规则设置（页内弹窗，不再跳转 /settings） =====
+const ruleVisible = ref(false)
+const ruleLoading = ref(false)
+const ruleSaving = ref(false)
+const ruleLoadError = ref(false)
+
+interface RuleForm {
+  invitation_enabled: boolean
+  invitation_reward_points: number
+  invitation_invitee_reward_points: number
+  invitation_rebate_percent: number
+  promotion_reward_enabled: boolean
+  promotion_reward_type: 'balance' | 'days'
+  promotion_reward_amount: number
+  promotion_reward_days: number
+}
+
+const ruleForm = reactive<RuleForm>({
+  invitation_enabled: false,
+  invitation_reward_points: 0,
+  invitation_invitee_reward_points: 0,
+  invitation_rebate_percent: 0,
+  promotion_reward_enabled: false,
+  promotion_reward_type: 'balance',
+  promotion_reward_amount: 0,
+  promotion_reward_days: 0,
+})
+
+/** 字符串 -> 布尔 */
+function parseRuleBool(val: string | undefined, fallback = false): boolean {
+  if (val === 'true' || val === '1') return true
+  if (val === 'false' || val === '0') return false
+  return fallback
+}
+
+/** 字符串 -> 非负整数 */
+function parseRuleInt(val: string | undefined, fallback = 0): number {
+  const n = Number.parseInt(val ?? '', 10)
+  return Number.isFinite(n) && n >= 0 ? n : fallback
+}
+
+/** 打开弹窗并加载当前规则 */
+async function openRuleDialog(): Promise<void> {
+  ruleVisible.value = true
+  ruleLoading.value = true
+  ruleLoadError.value = false
+  try {
+    const { settings } = await fetchEconomySettings()
+    ruleForm.invitation_enabled = parseRuleBool(settings.invitation_enabled)
+    ruleForm.invitation_reward_points = parseRuleInt(settings.invitation_reward_points)
+    ruleForm.invitation_invitee_reward_points = parseRuleInt(settings.invitation_invitee_reward_points)
+    ruleForm.invitation_rebate_percent = parseRuleInt(settings.invitation_rebate_percent)
+    ruleForm.promotion_reward_enabled = parseRuleBool(settings.promotion_reward_enabled)
+    ruleForm.promotion_reward_type = settings.promotion_reward_type === 'days' ? 'days' : 'balance'
+    ruleForm.promotion_reward_amount = parseRuleInt(settings.promotion_reward_amount)
+    ruleForm.promotion_reward_days = parseRuleInt(settings.promotion_reward_days)
+  } catch {
+    // 错误提示由 HTTP 拦截器统一处理
+    ruleLoadError.value = true
+  } finally {
+    ruleLoading.value = false
+  }
+}
+
+/** 保存邀请规则（只提交这 8 个 key） */
+async function saveRuleSettings(): Promise<void> {
+  ruleSaving.value = true
+  try {
+    const toIntStr = (v: number): string => {
+      const n = Math.floor(Number(v))
+      return String(Number.isFinite(n) && n >= 0 ? n : 0)
+    }
+    await updateEconomySettings({
+      invitation_enabled: ruleForm.invitation_enabled ? 'true' : 'false',
+      invitation_reward_points: toIntStr(ruleForm.invitation_reward_points),
+      invitation_invitee_reward_points: toIntStr(ruleForm.invitation_invitee_reward_points),
+      invitation_rebate_percent: toIntStr(ruleForm.invitation_rebate_percent),
+      promotion_reward_enabled: ruleForm.promotion_reward_enabled ? 'true' : 'false',
+      promotion_reward_type: ruleForm.promotion_reward_type,
+      promotion_reward_amount: toIntStr(ruleForm.promotion_reward_amount),
+      promotion_reward_days: toIntStr(ruleForm.promotion_reward_days),
+    })
+    ElMessage.success('邀请规则已保存')
+    ruleVisible.value = false
+  } finally {
+    ruleSaving.value = false
   }
 }
 
@@ -438,9 +526,7 @@ onMounted(reloadAll)
       <template #actions>
         <el-button :icon="RefreshCw" :loading="loading" @click="reloadAll">刷新</el-button>
         <el-button :icon="Plus" @click="openAdjust">调整积分</el-button>
-        <RouterLink v-slot="{ navigate }" to="/settings" custom>
-          <el-button type="primary" :icon="Settings" @click="navigate">规则设置</el-button>
-        </RouterLink>
+        <el-button type="primary" :icon="Settings" @click="openRuleDialog">规则设置</el-button>
       </template>
     </PageHeader>
 
@@ -829,6 +915,57 @@ onMounted(reloadAll)
       <template #footer>
         <el-button @click="editVisible = false">取消</el-button>
         <el-button type="primary" :loading="editLoading" @click="handleEdit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 邀请规则设置（页内弹窗） -->
+    <el-dialog v-model="ruleVisible" title="邀请规则设置" width="480px">
+      <div v-if="ruleLoading" class="rule-loading">
+        <el-skeleton :rows="6" animated />
+      </div>
+      <div v-else-if="ruleLoadError" class="rule-error">
+        <p>规则加载失败，请重试</p>
+        <el-button type="primary" @click="openRuleDialog">重新加载</el-button>
+      </div>
+      <el-form v-else label-position="top">
+        <el-form-item label="启用邀请">
+          <el-switch v-model="ruleForm.invitation_enabled" active-text="开" inactive-text="关" />
+        </el-form-item>
+        <el-form-item label="邀请人奖励">
+          <el-input-number v-model="ruleForm.invitation_reward_points" :min="0" style="width: 100%" />
+          <div class="form-hint">积分</div>
+        </el-form-item>
+        <el-form-item label="被邀请人奖励">
+          <el-input-number v-model="ruleForm.invitation_invitee_reward_points" :min="0" style="width: 100%" />
+          <div class="form-hint">积分</div>
+        </el-form-item>
+        <el-form-item label="消费返利">
+          <el-input-number v-model="ruleForm.invitation_rebate_percent" :min="0" :max="100" style="width: 100%" />
+          <div class="form-hint">% · 下级充值/消费时邀请人可得的比例</div>
+        </el-form-item>
+        <el-form-item label="推广奖励">
+          <el-switch v-model="ruleForm.promotion_reward_enabled" active-text="开" inactive-text="关" />
+          <div class="form-hint">邀请成功后在双向积分之外「另发」一笔；默认关闭，不打开就不会发</div>
+        </el-form-item>
+        <el-form-item label="推广奖励类型">
+          <el-select v-model="ruleForm.promotion_reward_type" style="width: 100%">
+            <el-option value="balance" label="余额（积分）" />
+            <el-option value="days" label="有效期（天）" />
+          </el-select>
+          <div class="form-hint">选「有效期」时给邀请人叠加会员天数，归属当前服</div>
+        </el-form-item>
+        <el-form-item label="推广奖励·余额数值">
+          <el-input-number v-model="ruleForm.promotion_reward_amount" :min="0" style="width: 100%" />
+          <div class="form-hint">积分 · 类型为「余额」时生效；0 = 不发</div>
+        </el-form-item>
+        <el-form-item label="推广奖励·有效期天数">
+          <el-input-number v-model="ruleForm.promotion_reward_days" :min="0" style="width: 100%" />
+          <div class="form-hint">天 · 类型为「有效期」时生效；0 = 不发</div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="ruleVisible = false">取消</el-button>
+        <el-button type="primary" :loading="ruleSaving" :disabled="ruleLoading || ruleLoadError" @click="saveRuleSettings">保存</el-button>
       </template>
     </el-dialog>
   </div>
