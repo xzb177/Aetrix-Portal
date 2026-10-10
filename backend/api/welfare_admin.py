@@ -262,6 +262,10 @@ WELFARE_CONFIG_KEYS = {
     "lottery_auto_draw_enabled": "1",
     "lottery_draw_interval_sec": "60",
     "lottery_notify_winners": "1",
+    # 三重门：身份门（参赛者必须在 TG 群里，默认开）/ 资格门（新号限制天数、每日参加上限，默认 0=不限制）
+    "lottery_require_group_member": "1",
+    "lottery_min_account_age_days": "0",
+    "lottery_max_joins_per_day": "0",
     # 注册后 TG 绑定引导页总开关
     "tg_bind_guide_enabled": "1",
     # 求片 v2：总开关 / 附议 / 附议者入库通知（默认全开）
@@ -628,5 +632,90 @@ def cancel_lottery_round(
         raise HTTPException(status_code=400, detail="只能取消进行中的活动")
     db.execute(text("UPDATE lottery_rounds SET status = 'cancelled' WHERE id = :id"), {"id": round_id})
     _audit(db, current_admin.id, "lottery_round_cancel", "lottery_round", round_id, {})
+    db.commit()
+    return {"success": True}
+
+
+# ==================== 三重门·资格门：黑名单管理 ====================
+
+class LotteryBlacklistAdd(BaseModel):
+    user_id: int = Field(..., gt=0)
+    reason: str = Field("", max_length=200)
+
+
+@admin_router.get("/welfare/lottery/blacklist")
+def list_lottery_blacklist(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """抽奖黑名单列表（三重门·资格门）。"""
+    total = db.query(models.LotteryBlacklist).count()
+    rows = (
+        db.query(models.LotteryBlacklist)
+        .order_by(models.LotteryBlacklist.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    items = []
+    for r in rows:
+        u = db.query(models.WebUser).filter(models.WebUser.id == r.user_id).first()
+        items.append({
+            "id": r.id,
+            "user_id": r.user_id,
+            "username": getattr(u, "username", None),
+            "reason": r.reason,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        })
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+@admin_router.post("/welfare/lottery/blacklist")
+def add_lottery_blacklist(
+    body: LotteryBlacklistAdd,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """把用户加入抽奖黑名单（三重门·资格门）。"""
+    u = db.query(models.WebUser).filter(models.WebUser.id == body.user_id).first()
+    if not u:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    exists = (
+        db.query(models.LotteryBlacklist)
+        .filter(models.LotteryBlacklist.user_id == body.user_id)
+        .first()
+    )
+    if exists:
+        raise HTTPException(status_code=400, detail="该用户已在黑名单中")
+    rec = models.LotteryBlacklist(
+        user_id=body.user_id,
+        reason=body.reason or None,
+        created_by=current_admin.id,
+    )
+    db.add(rec)
+    _audit(db, current_admin.id, "lottery_blacklist_add", "lottery_blacklist", body.user_id,
+           {"reason": body.reason})
+    db.commit()
+    return {"success": True, "id": rec.id}
+
+
+@admin_router.delete("/welfare/lottery/blacklist/{user_id}")
+def remove_lottery_blacklist(
+    user_id: int,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """把用户移出抽奖黑名单（三重门·资格门）。"""
+    rec = (
+        db.query(models.LotteryBlacklist)
+        .filter(models.LotteryBlacklist.user_id == user_id)
+        .first()
+    )
+    if not rec:
+        raise HTTPException(status_code=404, detail="该用户不在黑名单中")
+    db.delete(rec)
+    _audit(db, current_admin.id, "lottery_blacklist_remove", "lottery_blacklist", user_id, {})
     db.commit()
     return {"success": True}

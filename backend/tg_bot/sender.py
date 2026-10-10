@@ -125,3 +125,43 @@ def answer_callback_query(db, callback_query_id: str, text: str | None = None, s
         payload["show_alert"] = True
 
     return _call(db, "answerCallbackQuery", payload)
+
+
+# 三重门·身份门：在群成员列表里才算自己人
+_MEMBER_STATUSES = ("creator", "administrator", "member", "restricted")
+
+
+def get_chat_member(db, chat_id: int, user_id: int) -> tuple[bool | None, str]:
+    """查用户在群里的成员状态（三重门·身份门）。
+
+    :return: (is_member, status)
+        - (True, status)：在群里，status 为 creator/administrator/member/restricted
+        - (False, status)：不在群里（left/kicked）或查无此人
+        - (None, "api_error")：TG API 调用失败（网络/限流/token问题），
+          调用方应 fail-open（放行但记日志），可用性优先
+    """
+    import httpx
+
+    from backend.integrations.telegram import token as get_telegram_token
+
+    bot_token = get_telegram_token(db)
+    if not bot_token:
+        return None, "api_error"
+    try:
+        resp = httpx.post(
+            f"https://api.telegram.org/bot{bot_token}/getChatMember",
+            json={"chat_id": chat_id, "user_id": user_id},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return None, "api_error"
+    if not data.get("ok"):
+        # 用户不在群里时 TG 返回 ok=false（"user not found" / "chat not found"）
+        desc = str(data.get("description", "")).lower()
+        if "not found" in desc or "chat not found" in desc:
+            return False, "not_found"
+        return None, "api_error"
+    status = str((data.get("result") or {}).get("status", ""))
+    return (status in _MEMBER_STATUSES), status

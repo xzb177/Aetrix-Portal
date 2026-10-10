@@ -15,8 +15,8 @@ from backend import lottery
 def test_concurrent_distribute_pays_once(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'lot.db'}")
     for t in (models.WebUser, models.SystemConfig, models.LotteryRound, models.LotteryRoundPrize,
-              models.LotteryRoundEntry, models.LotteryRoundWinner, models.PointsLog,
-              models.WelfareGrantLog):
+              models.LotteryRoundEntry, models.LotteryRoundWinner, models.LotteryBlacklist,
+              models.PointsLog, models.WelfareGrantLog):
         t.__table__.create(engine, checkfirst=True)
     Session = sessionmaker(bind=engine)
     a, b = Session(), Session()

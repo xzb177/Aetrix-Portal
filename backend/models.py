@@ -1422,6 +1422,9 @@ class LotteryRound(Base):
     max_participants = Column(Integer, nullable=False, default=0)  # 0=不限
     seed_hash = Column(String(64), nullable=True)  # 开奖前公布的承诺
     seed = Column(String(64), nullable=True)       # 开奖后揭示
+    # 三重门·公信门：drand 公开随机信标（开奖时抓取，与 seed 混合成最终种子）
+    drand_round = Column(BigInteger, nullable=True)      # drand 信标轮次
+    drand_randomness = Column(String(128), nullable=True)  # drand 信标随机值（hex）
     created_by = Column(Integer, ForeignKey('web_users.id'), nullable=True)
     created_at = Column(DateTime, default=datetime.now)
 
@@ -1465,6 +1468,25 @@ class LotteryRoundWinner(Base):
     prize_id = Column(Integer, ForeignKey('lottery_round_prizes.id'), nullable=False)
     distributed = Column(Boolean, nullable=False, default=False, server_default='0')
     distributed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class LotteryBlacklist(Base):
+    """群抽奖黑名单：三重门·资格门。
+
+    被拉黑的用户无法参加任何群抽奖。由管理后台维护。
+    """
+    __tablename__ = 'lottery_blacklist'
+
+    __table_args__ = (
+        UniqueConstraint('user_id', name='uq_lottery_blacklist_user'),
+        Index('idx_lottery_blacklist_user', 'user_id'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('web_users.id', ondelete='CASCADE'), nullable=False)
+    reason = Column(String(200), nullable=True)  # 拉黑原因
+    created_by = Column(Integer, ForeignKey('web_users.id'), nullable=True)
     created_at = Column(DateTime, default=datetime.now)
 
 
