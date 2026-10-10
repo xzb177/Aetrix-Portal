@@ -1520,6 +1520,8 @@ class RedPacketClaim(Base):
     __table_args__ = (
         Index('idx_rpc_packet', 'packet_id'),
         Index('idx_rpc_user', 'user_id'),
+        # 并发重复领取的数据库级兜底：同一用户对同一红包只能有一条领取记录
+        UniqueConstraint('packet_id', 'user_id', name='uq_rpc_packet_user'),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
