@@ -172,13 +172,10 @@ def get_current_user_jwt(
     """JWT 鉴权依赖：Authorization: Bearer <access_token>"""
     if credentials is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未提供认证凭证")
-    from backend.security import decode_token, is_jti_revoked
+    from backend.security import decode_token, enforce_token_freshness
     payload = decode_token(credentials.credentials, expected_type="access")
     if not payload:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效或已过期的凭证")
-    # P2 修复：吊销检查（登出/改密后旧 token 立即失效）
-    if is_jti_revoked(db, payload.get("jti")):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="凭证已吊销，请重新登录")
     user_id = resolve_jwt_user_id(credentials.credentials)
     if user_id is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效或已过期的凭证")
@@ -187,9 +184,8 @@ def get_current_user_jwt(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="用户已被禁用")
-    # P3 修复：token 版本号对不上 → 改过密码，旧 token 全部作废
-    if int(payload.get("tv", 0) or 0) != int(user.token_version or 0):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="密码已变更，请重新登录")
+    # P2/P3：吊销 + token_version 双检查（横切能力只许一套，见 security.enforce_token_freshness）
+    enforce_token_freshness(db, payload, user)
     return user
 
 
@@ -422,6 +418,10 @@ def refresh(req: RefreshRequest, db: Session = Depends(get_db)):
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="用户不存在或已禁用")
 
+    # P3（审查第八批）：改密/登出后旧 refresh_token 作废，否则换新 access 形同虚设
+    from backend.security import enforce_token_freshness
+    enforce_token_freshness(db, payload, user)
+
     return {
         "access_token": create_access_token(user.id, {"username": user.username},
                                           token_version=user.token_version or 0),
@@ -450,7 +450,7 @@ def logout(request: Request,
     P2 修复（审查）：此前登出只是客户端清除，服务端无吊销能力，
     偷到的 token 在过期前一直有效。
     """
-    from backend.security import bearer_scheme, decode_token, revoke_jti
+    from backend.security import decode_token, revoke_jti
     token = None
     try:
         auth = request.headers.get("Authorization", "")

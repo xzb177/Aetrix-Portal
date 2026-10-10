@@ -186,6 +186,30 @@ def revoke_jti(db, jti: str | None, user_id: int, reason: str = "logout") -> Non
         _revoked_cache.add(jti)
 
 
+def enforce_token_freshness(db, payload: dict | None, user) -> None:
+    """Token 新鲜度双检查：jti 吊销表 + token_version 版本号。
+
+    横切能力只许一套：所有 JWT 鉴权依赖（门户 get_current_user_jwt、
+    用户端 get_current_user、refresh 换 token）都必须调这里，
+    不许各自手写检查，否则会出现"改密后部分接口仍认旧 token"的不一致。
+    不通过时抛 HTTPException(401)。
+    """
+    from fastapi import HTTPException, status
+    if not payload:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="无效或已过期的凭证")
+    # P2：登出/改密后被吊销的 jti 立即失效
+    if is_jti_revoked(db, payload.get("jti")):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="凭证已吊销，请重新登录")
+    # P3：token 版本号对不上 → 改过密码，旧 token 全部作废（防盗号后持续登录）
+    token_tv = int(payload.get("tv", 0) or 0)
+    user_tv = int(getattr(user, "token_version", 0) or 0)
+    if token_tv != user_tv:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="密码已变更，请重新登录")
+
+
 def resolve_jwt_user_id(token: str) -> Optional[int]:
     """从 access token 解出 user_id"""
     payload = decode_token(token, expected_type="access")

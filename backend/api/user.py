@@ -62,6 +62,12 @@ def get_current_user(
             detail="用户已被禁用"
         )
 
+    # P2/P3（审查第八批）：与门户鉴权同一套新鲜度检查；
+    # 改密/登出后旧 token 在这里同样作废，不许出现"部分接口仍认旧 token"。
+    from backend.security import decode_token, enforce_token_freshness
+    payload = decode_token(credentials.credentials, expected_type="access")
+    enforce_token_freshness(db, payload, user)
+
     return user
 
 
