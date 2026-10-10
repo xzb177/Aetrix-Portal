@@ -260,3 +260,137 @@ def test_match_renames_unknown_fid():
     finally:
         _cleanup(db, lib)
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# 404 退避：共享盘 ID 无效时不再每 5 分钟报错
+# ---------------------------------------------------------------------------
+
+def _fake_resp(status_code):
+    r = mock.Mock()
+    r.status_code = status_code
+    return r
+
+
+def test_api_get_raises_drive_not_found_on_404():
+    with mock.patch.object(drive_changes.httpx, "get",
+                           return_value=_fake_resp(404)):
+        try:
+            drive_changes._api_get("http://x", "tok", {"driveId": "D404"})
+        except drive_changes.DriveNotFoundError as e:
+            assert e.drive_id == "D404"
+        else:
+            raise AssertionError("应抛出 DriveNotFoundError")
+
+
+def test_api_get_401_still_permission_error():
+    with mock.patch.object(drive_changes.httpx, "get",
+                           return_value=_fake_resp(401)):
+        try:
+            drive_changes._api_get("http://x", "tok", {})
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError("401 应抛 PermissionError")
+
+
+def test_get_start_page_token_reraises_404():
+    with mock.patch.object(drive_changes, "_get_token", return_value="tok"), \
+         mock.patch.object(drive_changes, "_api_get",
+                           side_effect=drive_changes.DriveNotFoundError("D1")):
+        try:
+            drive_changes.get_start_page_token("D1")
+        except drive_changes.DriveNotFoundError:
+            pass
+        else:
+            raise AssertionError("404 不应被吞掉")
+
+
+def test_list_changes_reraises_404():
+    with mock.patch.object(drive_changes, "_get_token", return_value="tok"), \
+         mock.patch.object(drive_changes, "_api_get",
+                           side_effect=drive_changes.DriveNotFoundError("D1")):
+        try:
+            drive_changes.list_changes("pt", "D1")
+        except drive_changes.DriveNotFoundError:
+            pass
+        else:
+            raise AssertionError("404 不应被吞掉")
+
+
+def _run_poll_once(drive_id, api_side_effect, n_polls=1):
+    """跑 poll_once，返回 get_start_page_token 被调用的次数。"""
+    db = mock.Mock()
+    calls = {"n": 0}
+
+    def fake_gst(did):
+        calls["n"] += 1
+        if isinstance(api_side_effect, Exception):
+            raise api_side_effect
+        return api_side_effect
+
+    with mock.patch.object(drive_changes, "discover_drives",
+                           return_value={drive_id: ["MP"]}), \
+         mock.patch.object(drive_changes, "_get_page_token", return_value=None), \
+         mock.patch.object(drive_changes, "get_start_page_token",
+                           side_effect=fake_gst), \
+         mock.patch("backend.database.SessionLocal", return_value=db):
+        # 确保测试之间不互相污染 dead 标记
+        drive_changes._dead_drives.pop(drive_id, None)
+        try:
+            for _ in range(n_polls):
+                drive_changes.poll_once()
+        finally:
+            drive_changes._dead_drives.pop(drive_id, None)
+    return calls["n"]
+
+
+def test_poll_once_marks_dead_and_skips_second_poll(caplog):
+    import logging
+    did = "DEAD-%s" % __import__("uuid").uuid4().hex[:8]
+    with caplog.at_level(logging.ERROR, logger="backend.emby_server.drive_changes"):
+        n = _run_poll_once(did, drive_changes.DriveNotFoundError(did), n_polls=2)
+    # 第一轮调了 API 并标记 dead，第二轮直接跳过不再调 API
+    assert n == 1, "第二轮不应再请求 API"
+    err_logs = [r for r in caplog.records
+                if r.levelno >= logging.ERROR and "共享盘 ID 无效" in r.getMessage()]
+    assert len(err_logs) == 1, "error 日志只应打一次"
+    assert did in err_logs[0].getMessage()
+
+
+def test_poll_once_dead_backoff_expiry_retries():
+    import time
+    did = "EXP-%s" % __import__("uuid").uuid4().hex[:8]
+    # 先标记 dead，再把时间戳拨到退避期之前
+    with mock.patch.object(drive_changes, "DEAD_DRIVE_RETRY_SEC", 3600):
+        drive_changes._mark_dead_drive(did)
+        drive_changes._dead_drives[did] = time.time() - 3700
+        try:
+            n = _run_poll_once(did, drive_changes.DriveNotFoundError(did), n_polls=1)
+        finally:
+            drive_changes._dead_drives.pop(did, None)
+    assert n == 1, "退避期过后应再试一次"
+
+
+def test_poll_once_transient_error_not_marked_dead():
+    did = "TRANS-%s" % __import__("uuid").uuid4().hex[:8]
+    # 瞬时错误（get_start_page_token 吞掉返回 None）：两轮都重试，不标记 dead
+    n = _run_poll_once(did, None, n_polls=2)
+    assert n == 2, "瞬时错误每轮都应重试"
+    assert did not in drive_changes._dead_drives
+
+
+def test_is_dead_drive_expiry():
+    import time
+    did = "UNIT-%s" % __import__("uuid").uuid4().hex[:8]
+    try:
+        assert not drive_changes._is_dead_drive(did)
+        drive_changes._mark_dead_drive(did)
+        assert drive_changes._is_dead_drive(did)
+        # 拨时间到过期
+        with mock.patch.object(drive_changes, "DEAD_DRIVE_RETRY_SEC", 10):
+            drive_changes._dead_drives[did] = time.time() - 11
+            assert not drive_changes._is_dead_drive(did)
+            assert did not in drive_changes._dead_drives
+    finally:
+        drive_changes._dead_drives.pop(did, None)
