@@ -1045,7 +1045,7 @@ function formatDate(iso?: string | null) {
   color: var(--au-text);
 }
 
-.copy-btn .ok { color: var(--au-primary); }
+.copy-btn .ok { color: var(--au-success); }
 
 .text-btn {
   flex-shrink: 0;
@@ -1525,3 +1525,4 @@ function formatDate(iso?: string | null) {
   .spinning { animation-duration: 2.4s; }
 }
 </style>
+
