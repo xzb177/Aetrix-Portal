@@ -94,7 +94,9 @@ def test_save_allows_missing_dir_when_disabled(db, tmp_path):
 def test_compose_container_side_configurable():
     text = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert ":/strm:ro" not in text
-    assert text.count("${STRM_MOUNT_DIR:-/opt/strm}:${STRM_CONTAINER_PATH:-/strm}:ro") == 3
+    # aetrix-api 需要写入 /strm（.strm 生成器跑在 api 进程内），其余保持只读
+    assert text.count("${STRM_MOUNT_DIR:-/opt/strm}:${STRM_CONTAINER_PATH:-/strm}:ro") == 2
+    assert text.count("${STRM_MOUNT_DIR:-/opt/strm}:${STRM_CONTAINER_PATH:-/strm}:rw") == 1
     assert text.count("STRM_CONTAINER_PATH: ${STRM_CONTAINER_PATH:-/strm}") == 3
 
 
