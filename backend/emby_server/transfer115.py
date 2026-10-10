@@ -223,30 +223,45 @@ class Pan115Client:
 
     # ---- 目录 ----
 
-    def list_dir(self, cid: str = "0") -> list[dict]:
-        """列目录（用于目标路径浏览）"""
-        body = self._call(
-            "GET", f"{PAN115_WEBAPI_BASE}/files",
-            params={
-                "aid": 1, "cid": cid or "0", "o": "user_ptime", "asc": 1,
-                "show_dir": 1, "limit": 200, "offset": 0,
-            },
-        )
-        _raise_for_state(body)
-        data = body.get("data") or []
-        if not isinstance(data, list):
-            return []
-        return [
-            {
-                "fid": str(entry.get("fid") or entry.get("cid") or ""),
-                "cid": str(entry.get("cid") or entry.get("fid") or ""),
-                "name": entry.get("n") or entry.get("name") or "",
-                "is_dir": _is_dir(entry),
-                "size": int(entry.get("s") or 0),
-                "pickcode": entry.get("pc") or "",
-            }
-            for entry in data
-        ]
+    def list_dir(self, cid: str = "0", limit: int = 200) -> list[dict]:
+        """列目录（用于目标路径浏览）
+
+        P1 修复（审查）：此前写死 limit=200/offset=0，超 200 个文件的目录
+        被静默截断。现自动翻页取全量（单页 limit 可配，上限 1000）。
+        """
+        limit = max(1, min(int(limit or 200), 1000))
+        out: list[dict] = []
+        offset = 0
+        while True:
+            body = self._call(
+                "GET", f"{PAN115_WEBAPI_BASE}/files",
+                params={
+                    "aid": 1, "cid": cid or "0", "o": "user_ptime", "asc": 1,
+                    "show_dir": 1, "limit": limit, "offset": offset,
+                },
+            )
+            _raise_for_state(body)
+            data = body.get("data") or []
+            if not isinstance(data, list):
+                break
+            out.extend(
+                {
+                    "fid": str(entry.get("fid") or entry.get("cid") or ""),
+                    "cid": str(entry.get("cid") or entry.get("fid") or ""),
+                    "name": entry.get("n") or entry.get("name") or "",
+                    "is_dir": _is_dir(entry),
+                    "size": int(entry.get("s") or 0),
+                    "pickcode": entry.get("pc") or "",
+                }
+                for entry in data
+            )
+            if len(data) < limit:
+                break
+            offset += len(data)
+            # 安全阀：单目录 10 万条封顶，防异常 API 无限翻页
+            if offset >= 100000:
+                break
+        return out
 
     # ---- 下载 ----
 

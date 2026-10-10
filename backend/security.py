@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import secrets
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -110,19 +111,21 @@ def _create_token(data: dict, expires_delta: timedelta, token_type: str) -> str:
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def create_access_token(user_id: int, extra: Optional[dict[str, Any]] = None) -> str:
-    payload = {"sub": str(user_id)}
+def create_access_token(user_id: int, extra: Optional[dict[str, Any]] = None,
+                        token_version: int = 0) -> str:
+    payload = {"sub": str(user_id), "tv": int(token_version or 0)}
     if extra:
         # P3 修复（审查）：extra 在 sub 之后 update 可覆盖 sub，是 footgun。
         # 先剔除保留键，再强制写 sub。
-        for reserved in ("sub", "exp", "type", "jti"):
+        for reserved in ("sub", "exp", "type", "jti", "tv"):
             extra.pop(reserved, None)
         payload.update(extra)
     return _create_token(payload, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES), "access")
 
 
-def create_refresh_token(user_id: int) -> str:
-    return _create_token({"sub": str(user_id)}, timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS), "refresh")
+def create_refresh_token(user_id: int, token_version: int = 0) -> str:
+    return _create_token({"sub": str(user_id), "tv": int(token_version or 0)},
+                         timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS), "refresh")
 
 
 def decode_token(token: str, expected_type: Optional[str] = None) -> Optional[dict]:
@@ -134,6 +137,77 @@ def decode_token(token: str, expected_type: Optional[str] = None) -> Optional[di
     if expected_type and payload.get("type") != expected_type:
         return None
     return payload
+
+
+# JWT 吊销：进程内布隆式缓存（jti → 是否吊销）。命中缓存直接判，
+# 未命中查库。缓存只记"已吊销"（肯定），不记"未吊销"（可能随后被吊销）。
+_revoked_cache: set[str] = set()
+_revoked_cache_lock = threading.Lock()
+_REVOKED_CACHE_MAX = 10000
+
+
+def is_jti_revoked(db, jti: str | None) -> bool:
+    """jti 是否在吊销表里。P2 修复：登出/改密后旧 token 立即失效。"""
+    if not jti:
+        return False
+    with _revoked_cache_lock:
+        if jti in _revoked_cache:
+            return True
+    try:
+        from backend.models import RevokedJwt
+        row = db.query(RevokedJwt).filter(RevokedJwt.jti == jti).first()
+    except Exception:
+        return False
+    if row is not None:
+        with _revoked_cache_lock:
+            if len(_revoked_cache) >= _REVOKED_CACHE_MAX:
+                _revoked_cache.clear()
+            _revoked_cache.add(jti)
+        return True
+    return False
+
+
+def revoke_jti(db, jti: str | None, user_id: int, reason: str = "logout") -> None:
+    """吊销一个 jti（幂等）。expires_at 按 token 的 exp 来，过期后可清理。"""
+    if not jti:
+        return
+    try:
+        from backend.models import RevokedJwt
+        from datetime import datetime, timedelta
+        # token 最长 30 天（refresh），吊销记录保留 31 天后可清
+        expires = datetime.now() + timedelta(days=31)
+        db.merge(RevokedJwt(jti=jti, user_id=user_id, reason=reason,
+                            expires_at=expires))
+        db.commit()
+    except Exception:
+        db.rollback()
+        return
+    with _revoked_cache_lock:
+        _revoked_cache.add(jti)
+
+
+def enforce_token_freshness(db, payload: dict | None, user) -> None:
+    """Token 新鲜度双检查：jti 吊销表 + token_version 版本号。
+
+    横切能力只许一套：所有 JWT 鉴权依赖（门户 get_current_user_jwt、
+    用户端 get_current_user、refresh 换 token）都必须调这里，
+    不许各自手写检查，否则会出现"改密后部分接口仍认旧 token"的不一致。
+    不通过时抛 HTTPException(401)。
+    """
+    from fastapi import HTTPException, status
+    if not payload:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="无效或已过期的凭证")
+    # P2：登出/改密后被吊销的 jti 立即失效
+    if is_jti_revoked(db, payload.get("jti")):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="凭证已吊销，请重新登录")
+    # P3：token 版本号对不上 → 改过密码，旧 token 全部作废（防盗号后持续登录）
+    token_tv = int(payload.get("tv", 0) or 0)
+    user_tv = int(getattr(user, "token_version", 0) or 0)
+    if token_tv != user_tv:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="密码已变更，请重新登录")
 
 
 def resolve_jwt_user_id(token: str) -> Optional[int]:

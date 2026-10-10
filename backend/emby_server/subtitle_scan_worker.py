@@ -177,30 +177,56 @@ def update_external_subtitles(db, item, detected: Optional[Set[str]] = None) -> 
 
 
 def _scan_once() -> Tuple[int, int]:
-    """扫一轮：返回 (检查条数, 更新条数)。"""
+    """扫一轮：返回 (检查条数, 更新条数)。
+
+    P1 修复（审查）：此前 order_by(id).limit(10000) 无游标，每轮永远只扫
+    id 最小的 1 万条，靠后的条目永远做不了字幕变更检测。
+    现用 SystemConfig 持久化游标（WHERE id > last_id），到尾后绕回。
+    """
     from backend.database import SessionLocal
     from backend.emby_server import models as em
+    from backend.models import SystemConfig
+
+    CURSOR_KEY = "subtitle_scan_cursor"
 
     checked = 0
     updated = 0
     pending_commit = 0
     db = SessionLocal()
     try:
-        # 流式迭代（yield_per），避免 1 万 ORM 常驻内存
-        # order_by(id) 保证大库下每轮推进，不永远扫"任意"子集
-        query = (
-            db.query(em.MediaItem)
-            .filter(
-                em.MediaItem.item_type.in_(("movie", "episode")),
-                em.MediaItem.deleted_at.is_(None),
-                em.MediaItem.merged_into_id.is_(None),
-                em.MediaItem.file_path.isnot(None),
+        # 读游标
+        cur_row = db.query(SystemConfig).filter(
+            SystemConfig.key == CURSOR_KEY).first()
+        try:
+            last_id = int(cur_row.value) if cur_row and cur_row.value else 0
+        except (ValueError, TypeError):
+            last_id = 0
+
+        def _batch(after_id: int):
+            return (
+                db.query(em.MediaItem)
+                .filter(
+                    em.MediaItem.item_type.in_(("movie", "episode")),
+                    em.MediaItem.deleted_at.is_(None),
+                    em.MediaItem.merged_into_id.is_(None),
+                    em.MediaItem.file_path.isnot(None),
+                    em.MediaItem.id > after_id,
+                )
+                .order_by(em.MediaItem.id.asc())
+                .yield_per(500)
+                .limit(SUBTITLE_SCAN_BATCH_LIMIT)
+                .all()
             )
-            .order_by(em.MediaItem.id.asc())
-            .yield_per(500)
-            .limit(SUBTITLE_SCAN_BATCH_LIMIT)
-        )
-        for item in query:
+
+        items = _batch(last_id)
+        if not items and last_id > 0:
+            # 到尾了：绕回从头扫
+            last_id = 0
+            items = _batch(0)
+
+        max_id = last_id
+        # 流式迭代（yield_per），避免 1 万 ORM 常驻内存
+        for item in items:
             if _stop_event.is_set():
                 break
             # 先判路径可探测性：mount:// 或不可访问目录直接跳过，
@@ -236,8 +262,18 @@ def _scan_once() -> Tuple[int, int]:
                 logger.warning("字幕扫描条目失败 %s: %s", item.file_path, e)
             finally:
                 # 及时释放，避免 identity map 无限增长
+                if item.id > max_id:
+                    max_id = item.id
                 db.expunge(item)
         if pending_commit:
+            db.commit()
+        # 持久化游标：下轮从 max_id 之后继续
+        if max_id > last_id:
+            if cur_row is None:
+                cur_row = SystemConfig(key=CURSOR_KEY, value=str(max_id))
+                db.add(cur_row)
+            else:
+                cur_row.value = str(max_id)
             db.commit()
         return checked, updated
     finally:

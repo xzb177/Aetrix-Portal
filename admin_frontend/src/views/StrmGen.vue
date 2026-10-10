@@ -163,6 +163,7 @@ async function onTrigger(full: boolean) {
     } else {
       ElMessage.warning(res.error || '已有任务在运行')
       await load(true)
+      ensurePolling()
     }
   } catch {
     // 拦截器已提示

@@ -15,9 +15,12 @@
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from backend.integrations import store
 
@@ -123,7 +126,12 @@ def _verify(db: Session, cfg: dict, token: Optional[str], ip: str = "") -> tuple
         with httpx.Client(timeout=8.0) as client:
             resp = client.post(VERIFY_URLS[name], data=data)
         body = resp.json() if resp.status_code == 200 else {}
-    except Exception as exc:  # noqa: BLE001 — 提供方不可达时不能把用户挡在门外太久
+    except Exception as exc:  # noqa: BLE001
+        # P2 修复（审查）：此前注释声称"不能把用户挡在门外太久"，但代码实际是
+        # fail-closed（返回 False → guard 抛 400）。现明确产品决策：
+        # 验证码服务不可达时 fail-closed（登录/注册暂停），安全优先于可用性。
+        # 防爆破不依赖验证码单点，另有登录限流兜底。
+        logger.warning("人机验证服务不可达（fail-closed）: %s", type(exc).__name__)
         return False, f"人机验证服务不可达：{type(exc).__name__}"
     if body.get("success"):
         return True, ""

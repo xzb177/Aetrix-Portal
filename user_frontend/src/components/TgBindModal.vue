@@ -14,6 +14,7 @@ const toast = useToast()
 
 const loading = ref(false)
 const verifying = ref(false)
+const unbinding = ref(false)
 const code = ref('')
 const botUsername = ref('')
 const expiresIn = ref(0)
@@ -21,6 +22,9 @@ const countdown = ref(0)
 const verifyError = ref('')
 const success = ref(false)
 const copied = ref(false)
+// 已绑定状态：弹窗打开时先查 /status，避免已绑定用户仍看到绑定码对话框
+const alreadyBound = ref(false)
+const boundTelegramId = ref<number | null>(null)
 
 let timer: ReturnType<typeof setInterval> | null = null
 let closeTimer: ReturnType<typeof setTimeout> | null = null
@@ -116,17 +120,65 @@ async function copyCode() {
   }
 }
 
+async function onUnbind() {
+  if (unbinding.value) return
+  if (!window.confirm('确定要解绑 Telegram 吗？解绑后公益服功能（签到/积分/红包/抽奖）将受限。')) return
+  unbinding.value = true
+  try {
+    const res = await tgApi.unbind()
+    if (res && res.success) {
+      alreadyBound.value = false
+      boundTelegramId.value = null
+      emit('bound')
+      toast.success('已解绑 Telegram')
+      // 切回绑定码流程，方便用户直接重新绑定
+      await loadCode()
+    } else {
+      toast.error('解绑失败，请稍后重试')
+    }
+  } catch (e) {
+    toast.error(errMsg(e))
+  } finally {
+    unbinding.value = false
+  }
+}
+
 function close() {
   emit('update:modelValue', false)
+}
+
+/** 弹窗打开：先查绑定状态，已绑定则展示已绑定面板，不再生成新码 */
+async function onOpen() {
+  loading.value = true
+  verifyError.value = ''
+  success.value = false
+  alreadyBound.value = false
+  boundTelegramId.value = null
+  try {
+    const st = await tgApi.status()
+    if (!props.modelValue) return // 弹窗已关闭：丢弃过期响应
+    if (st && st.bound) {
+      alreadyBound.value = true
+      boundTelegramId.value = st.telegram_id
+      emit('bound') // 刷新父组件徽章（Bot 端绑定后网页徽章可能过期）
+      loading.value = false
+      return
+    }
+  } catch {
+    // 状态查询失败：降级走原有绑定码流程
+  }
+  await loadCode()
 }
 
 watch(
   () => props.modelValue,
   (v) => {
     if (v) {
-      loadCode()
+      onOpen()
     } else {
       stopCountdown()
+      alreadyBound.value = false
+      boundTelegramId.value = null
       if (closeTimer) {
         clearTimeout(closeTimer)
         closeTimer = null
@@ -154,6 +206,20 @@ onBeforeUnmount(() => {
         </div>
         <h3>绑定成功</h3>
         <p>Telegram 账号已成功绑定，即将关闭…</p>
+      </div>
+
+      <div v-else-if="alreadyBound" class="tg-success">
+        <div class="tg-success-icon">
+          <Check :size="30" />
+        </div>
+        <h3>Telegram 已绑定</h3>
+        <p>Telegram ID：{{ boundTelegramId }}</p>
+        <p class="tg-hint">如需更换账号，可先解绑再重新绑定。</p>
+        <div class="tg-actions">
+          <button class="au-btn" type="button" :disabled="unbinding" @click="onUnbind">
+            {{ unbinding ? '解绑中…' : '解绑' }}
+          </button>
+        </div>
       </div>
 
       <div v-else-if="loading" class="tg-loading">

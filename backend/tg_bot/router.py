@@ -201,6 +201,10 @@ def dispatch(db, update: dict) -> None:
             chat_type = (chat.get("type") or "")
             reply = handlers.handle_lottery(
                 db, tg_user, chat_id, args, chat_type in ("group", "supergroup"))
+        elif cmd == "/redpacket":
+            # P1 修复：把 update_id 传给 handler 做发红包幂等（防 poller 重放双花）
+            reply = handlers.handle_redpacket(
+                db, tg_user, chat_id, args, update_id=update.get("update_id"))
         else:
             reply = fn(db, tg_user, chat_id, args)
         # handler 可返回 str 或 (text, reply_markup) 元组（一键登录按钮）

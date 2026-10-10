@@ -62,6 +62,12 @@ def get_current_user(
             detail="用户已被禁用"
         )
 
+    # P2/P3（审查第八批）：与门户鉴权同一套新鲜度检查；
+    # 改密/登出后旧 token 在这里同样作废，不许出现"部分接口仍认旧 token"。
+    from backend.security import decode_token, enforce_token_freshness
+    payload = decode_token(credentials.credentials, expected_type="access")
+    enforce_token_freshness(db, payload, user)
+
     return user
 
 
@@ -713,6 +719,9 @@ def _create_media_seek_sync(
         raise HTTPException(status_code=409, detail=f"《{name}》{suffix}已在处理中，请耐心等待（可在列表中看到进度）")
 
     # 每日额度：统计**今天提交过多少条**（含后来撤回的，口径见 media_seek.used_today）。
+    # P2 修复（审查）："先 count 后 insert"并发可绕过上限。先锁用户行再统计。
+    from backend.api.economy import lock_user_row
+    lock_user_row(db, user.id)
     limit = media_seek.daily_limit(db)
     if media_seek.used_today(db, user.id) >= limit:
         raise HTTPException(status_code=429, detail=f"今日求片已达上限（{limit} 条），请明天再提交")

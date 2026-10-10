@@ -257,6 +257,9 @@ class WebUser(Base):
     # invitation=邀请码注册 / open=开放注册。
     # 空值 = 升级前的存量用户（当时没记，不硬猜），后台显示为「未记录」。
     register_channel = Column(String(20), index=True)
+    # P2/P3 修复（审查）：token 版本号。改密码 / 管理员踢下线时 +1，
+    # JWT payload 里带 tv，鉴权时比对——旧版本 token 全部失效（改密后旧 token 立即作废）。
+    token_version = Column(Integer, default=0, nullable=False, server_default="0")
 
     # 自建 Emby 凭据（完全自建模式下，Emby 客户端用此账号密码登录）
     emby_username = Column(String(64), unique=True, nullable=True)
@@ -1472,6 +1475,9 @@ class RedPacket(Base):
     __table_args__ = (
         Index('idx_rp_sender', 'sender_id'),
         Index('idx_rp_time', 'created_at'),
+        # P1 修复（审查）：TG poller at-least-once 重放 /redpacket 会重复建包扣款。
+        # 用 TG update_id 做幂等键，唯一约束保证重放只返回已存在的包。
+        UniqueConstraint('idempotency_key', name='uq_redpacket_idempotency'),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -1482,6 +1488,8 @@ class RedPacket(Base):
     remaining_count = Column(Integer, nullable=False)
     expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.now)
+    # 幂等键（如 tg:<update_id>）；非 TG 渠道调用时可为空
+    idempotency_key = Column(String(64), nullable=True)
 
     sender = relationship("WebUser")
 
@@ -1626,3 +1634,18 @@ class ChatPointsLog(Base):
     points_date = Column(Date, nullable=False, index=True)
     created_at = Column(DateTime, default=datetime.now, nullable=False)
 
+
+
+class RevokedJwt(Base):
+    """JWT 吊销表（P2 修复：jti 生成了但从未校验/存储，无吊销能力）。
+
+    登出 / 改密码 / 管理员踢下线时把 jti 写进来；鉴权时查表，已吊销则 401。
+    expires_at 过期后由定时任务清理（token 本来也过期了，留着无意义）。
+    """
+    __tablename__ = 'revoked_jwt'
+
+    jti = Column(String(64), primary_key=True)
+    user_id = Column(Integer, ForeignKey('web_users.id'), nullable=False, index=True)
+    reason = Column(String(50), nullable=False, default="logout")
+    revoked_at = Column(DateTime, default=datetime.now, nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)

@@ -187,6 +187,10 @@ def drive_url(file_id: str) -> str:
 # Drive API 列举（复用 drive_changes 的 SA/凭据能力）
 # ---------------------------------------------------------------------------
 
+#: Drive files.list 地址（_list_files_page 列举文件/目录用）
+FILES_LIST_URL = "https://www.googleapis.com/drive/v3/files"
+
+
 def _drive_modules():
     """惰性导入 drive_changes（重依赖，避免循环导入）。"""
     try:
@@ -853,6 +857,10 @@ def missing_report(db, limit: int = 100) -> dict[str, Any]:
             return {"ok": True, "has_data": False, "incomplete": []}
         stats = json.loads(raw)
         verify = stats.get("verify", {})
+        # 生成失败/未完成校验时 stats 里没有 verify，此时视为无数据，
+        # 否则前端会显示"剧集总数 0、完整 0、缺集 0"的误导性空报告。
+        if not verify:
+            return {"ok": True, "has_data": False, "incomplete": []}
         return {
             "ok": True,
             "has_data": True,
