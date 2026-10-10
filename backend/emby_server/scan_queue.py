@@ -711,6 +711,30 @@ def _pick_locked() -> Optional[ScanTask]:
     return None
 
 
+def waiting_dispatchable_count() -> int:
+    """等待队列中"现在就能派发"的任务数（公开 API，供统一调度器用）
+
+    排除被挂载串行挡住（waiting_for 非空）、当前根本跑不起来的任务——
+    这些任务不应触发 enrich 让路，否则优先级倒置。
+
+    只统计"未被挂载串行挡住"的任务：队头被挡住时 _pick_locked 会跳过它
+    让后面的任务先跑，所以"槽位已满"不影响计数——只要有没被挡住的等待任务，
+    就说明扫描侧想要资源，enrich 就该降并发让路。
+
+    只读：内部持有 _LOCK，不抛异常（异常时返回 0）。
+    """
+    try:
+        with _LOCK:
+            n = 0
+            for task in _QUEUE:
+                if _conflicts_locked(task):
+                    continue
+                n += 1
+            return n
+    except Exception:
+        return 0
+
+
 def _pump_locked() -> int:
     """立刻派发所有「现在就能跑」的任务（调用方必须已持有 _COND 的锁），返回派发数
 
