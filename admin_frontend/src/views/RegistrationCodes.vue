@@ -64,6 +64,10 @@ const genForm = ref({
   days: 30,
   max_uses: 1,
   expires_days: 30,
+  // M1：奖励类型
+  reward_type: 'subscription' as 'subscription' | 'points' | 'discount',
+  points_value: 50,
+  discount_pct: 85,
   algorithm: 'base32-20',
   is_decoy: false,
   target_username: '',
@@ -185,6 +189,9 @@ async function generate() {
       days: genForm.value.code_type === 3 ? -1 : genForm.value.days,
       max_uses: genForm.value.max_uses,
       expires_days: genForm.value.expires_days,
+      reward_type: genForm.value.reward_type,
+      points_value: genForm.value.points_value,
+      discount_pct: genForm.value.discount_pct,
       algorithm: genForm.value.algorithm,
       is_decoy: genForm.value.is_decoy,
       target_username: genForm.value.target_username || undefined,
@@ -368,7 +375,15 @@ function usedByNames(row: RegistrationCode): string {
         <el-form-item label="数量">
           <el-input-number v-model="genForm.count" :min="1" :max="200" />
         </el-form-item>
-        <el-form-item label="会员天数">
+        <el-form-item label="奖励类型">
+          <el-radio-group v-model="genForm.reward_type">
+            <el-radio-button value="subscription">会员天数</el-radio-button>
+            <el-radio-button value="points">积分</el-radio-button>
+            <el-radio-button value="discount">折扣券</el-radio-button>
+          </el-radio-group>
+          <div class="form-hint">M1 统一码系统：卡码也可发放积分或折扣</div>
+        </el-form-item>
+        <el-form-item v-if="genForm.reward_type === 'subscription'" label="会员天数">
           <el-input-number
             v-model="genForm.days"
             :min="1"
@@ -376,6 +391,13 @@ function usedByNames(row: RegistrationCode): string {
             :disabled="genForm.code_type === 3"
           />
           <span class="form-hint inline-hint">本次授予：{{ dailyDefault }}</span>
+        </el-form-item>
+        <el-form-item v-if="genForm.reward_type === 'points'" label="积分面额">
+          <el-input-number v-model="genForm.points_value" :min="1" :max="1000000" />
+        </el-form-item>
+        <el-form-item v-if="genForm.reward_type === 'discount'" label="折扣（实付百分比）">
+          <el-input-number v-model="genForm.discount_pct" :min="1" :max="99" />
+          <span class="form-hint inline-hint">如 85 = 八五折</span>
         </el-form-item>
         <el-form-item label="每码次数">
           <el-input-number v-model="genForm.max_uses" :min="1" :max="1000" />

@@ -180,6 +180,10 @@ export const generateCodes = (data: {
   note?: string
   /** 这批码开通哪个服的会员（留空 = 当前服） */
   realm_id?: number
+  /** M1：奖励类型 */
+  reward_type?: string
+  points_value?: number
+  discount_pct?: number
 }) => post<{
   success: boolean
   message: string
@@ -1695,3 +1699,20 @@ export const fetchRcloneConf = () =>
 export const saveRcloneConf = (conf: string) =>
   post<{ success: boolean; path: string; remotes: string[]; total: number }>(
     `${E}/mounts/rclone/conf`, { conf })
+
+/** Google Drive SA 状态（Fix 6） */
+export const fetchGDriveSaStatus = () =>
+  get<{
+    sa_count: number
+    sa_files: string[]
+    sa_truncated: boolean
+    current_sa: string | null
+    rotation_index: number
+    disk: Record<string, unknown>
+    cache_size_bytes: number
+    cache_size_human: string
+  }>('/gdrive/sa-status')
+
+/** 手动触发 SA 轮换（Fix 6） */
+export const rotateGDriveSa = () =>
+  post<{ success: boolean; sa_file?: string; mode?: string }>('/gdrive/sa-rotate')

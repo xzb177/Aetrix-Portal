@@ -277,6 +277,10 @@ async function confirmCodeRedeem() {
 
 // ===== 下单 =====
 async function handleOrder(kind: 'recharge' | 'subscription', itemId?: number) {
+  if (!methods.value.length) {
+    toast.error('暂无可用支付方式，请联系管理员')
+    return
+  }
   orderLoading.value = itemId
   try {
     // 优惠码在试算通过的商品上才带：后端会按同一套口径再算一遍并占额度
@@ -575,7 +579,7 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
               type="button"
               class="pkg-row"
               :class="{ popular: p.is_popular }"
-              :disabled="orderLoading === p.id"
+              :disabled="orderLoading === p.id || !methods.length"
               @click="handleOrder('recharge', p.id)"
             >
               <span class="pkg-info">
@@ -624,7 +628,7 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
               <button
                 type="button"
                 class="store-custom-btn"
-                :disabled="!canCustomRecharge || orderLoading === -1"
+                :disabled="!canCustomRecharge || orderLoading === -1 || !methods.length"
                 @click="handleCustomRecharge"
               >
                 <span v-if="orderLoading === -1" class="spinner"></span>
@@ -714,7 +718,7 @@ const showTgBanner = computed(() => !!tgStatus.value && tgStatus.value.required 
                   <button
                     type="button"
                     class="plan-buy"
-                    :disabled="orderLoading === p.id"
+                    :disabled="orderLoading === p.id || !methods.length"
                     @click="handleOrder('subscription', p.id)"
                   >
                     <span v-if="orderLoading === p.id" class="spinner"></span>

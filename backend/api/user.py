@@ -971,6 +971,27 @@ def get_my_subscriptions(
     return result
 
 
+@user_router.post("/subscriptions/{subscription_id}/cancel")
+def cancel_my_subscription(
+    subscription_id: int,
+    current_user: models.WebUser = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """取消/终止我的订阅（立即失效）"""
+    sub = db.query(models.UserSubscription).filter(
+        models.UserSubscription.id == subscription_id,
+        models.UserSubscription.user_id == current_user.id,
+    ).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="订阅不存在")
+    if sub.status == "cancelled":
+        return {"success": True, "message": "订阅已取消"}
+    sub.status = "cancelled"
+    sub.auto_renew = False
+    db.commit()
+    return {"success": True, "message": "订阅已终止"}
+
+
 @user_router.get("/subscription-plans")
 def get_subscription_plans(
     realm_id: int | None = None,

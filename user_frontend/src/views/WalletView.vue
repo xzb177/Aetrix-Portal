@@ -161,7 +161,8 @@ async function confirmCodeRedeem() {
     toast.success(res.message || '卡码核销成功')
     redeemCode.value = ''
     codePreview.value = null
-    await refreshSubscriptions()
+    // Fix 7：卡码可能发放积分（M1 统一码系统），余额也要刷新
+    await Promise.all([refreshBalance(), refreshSubscriptions()])
   } catch (err: any) {
     const detail = err?.response?.data?.detail
     toast.error(typeof detail === 'string' ? detail : '核销失败，请稍后重试')

@@ -199,6 +199,10 @@ class CodeGenerateRequest(BaseModel):
     note: str = ""
     # 这张卡码开通哪个服的会员（留空 = 当前服）
     realm_id: Optional[int] = None
+    # M1：奖励类型
+    reward_type: str = Field(default="subscription")
+    points_value: int = Field(default=0, ge=0)
+    discount_pct: int = Field(default=0, ge=0, le=100)
 
 
 @admin_ops_router.post("/registration-codes/generate")
@@ -243,6 +247,9 @@ def generate_codes(
         else:
             raise HTTPException(status_code=500, detail="卡码生成冲突，请重试")
 
+        # M1：校验奖励类型
+        if request.reward_type not in ("subscription", "points", "discount"):
+            raise HTTPException(status_code=400, detail="reward_type 非法")
         code = models.RegistrationCode(
             code=raw,
             max_uses=request.max_uses,
@@ -256,6 +263,9 @@ def generate_codes(
             target_username=target_username or None,
             source="admin",
             realm_id=target_realm,
+            reward_type=request.reward_type,
+            points_value=request.points_value,
+            discount_pct=request.discount_pct,
         )
         db.add(code)
         created.append(code)
