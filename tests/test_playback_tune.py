@@ -52,54 +52,73 @@ def _write_conf(path: Path, body: str):
     path.write_text(body, encoding="utf-8")
 
 
-def test_sa_rotation_dir_mode(tmp_path, monkeypatch):
-    # 伪造 rclone >= 1.55
-    monkeypatch.setattr(pt, "rclone_version_tuple", lambda bin_path="rclone": (1, 66, 0))
+def test_sa_rotation_round_robin(tmp_path):
+    # 应用层轮换：每次调用推进到下一个 SA
+    sa_dir = tmp_path / "sa"
+    sa_dir.mkdir()
+    (sa_dir / "a.json").write_text("{}")
+    (sa_dir / "b.json").write_text("{}")
+    (sa_dir / "c.json").write_text("{}")
+    conf = tmp_path / "rclone.conf"
+    _write_conf(conf, "[MP]\ntype = drive\nservice_account_file = /old/a.json\n")
+    state = tmp_path / "state.json"
+
+    r1 = pt.ensure_sa_rotation(conf, sa_dir, state_path=state)
+    assert r1["mode"] == "rotated"
+    assert r1["changed"] is True
+    assert r1["sa_file"].endswith("a.json")
+
+    r2 = pt.ensure_sa_rotation(conf, sa_dir, state_path=state)
+    assert r2["changed"] is True  # 轮换推进，不是幂等
+    assert r2["sa_file"].endswith("b.json")
+
+    r3 = pt.ensure_sa_rotation(conf, sa_dir, state_path=state)
+    assert r3["sa_file"].endswith("c.json")
+
+    r4 = pt.ensure_sa_rotation(conf, sa_dir, state_path=state)
+    assert r4["sa_file"].endswith("a.json")  # 回绕
+
+    # 配置里写的是单文件模式（rclone 通用）
+    cfg = configparser.ConfigParser()
+    cfg.read(conf, encoding="utf-8")
+    assert cfg.has_option("MP", "service_account_file")
+    assert not cfg.has_option("MP", "service_account_file_path")
+
+
+def test_sa_rotation_cleans_deprecated_dir_mode(tmp_path):
+    # 清理废弃的 service_account_file_path（rclone 已移除该选项）
     sa_dir = tmp_path / "sa"
     sa_dir.mkdir()
     (sa_dir / "a.json").write_text("{}")
     (sa_dir / "b.json").write_text("{}")
     conf = tmp_path / "rclone.conf"
-    _write_conf(conf, "[MP]\ntype = drive\nservice_account_file = /old/a.json\n")
-    r = pt.ensure_sa_rotation(conf, sa_dir)
-    assert r["mode"] == "dir"
+    _write_conf(conf, "[MP]\ntype = drive\nservice_account_file_path = /opt/rclone-sa/\n")
+    state = tmp_path / "state.json"
+    r = pt.ensure_sa_rotation(conf, sa_dir, state_path=state)
     assert r["changed"] is True
+    assert r["warning"] and "service_account_file_path" in r["warning"]
     cfg = configparser.ConfigParser()
     cfg.read(conf, encoding="utf-8")
-    assert not cfg.has_option("MP", "service_account_file")
-    assert cfg.get("MP", "service_account_file_path").rstrip("/") == str(sa_dir.resolve())
+    assert not cfg.has_option("MP", "service_account_file_path")
+    assert cfg.has_option("MP", "service_account_file")
 
 
-def test_sa_rotation_single_sa(tmp_path, monkeypatch):
-    monkeypatch.setattr(pt, "rclone_version_tuple", lambda bin_path="rclone": (1, 66, 0))
+def test_sa_rotation_single_sa(tmp_path):
+    # 只有一个 SA 文件时 mode=single，不轮换
     sa_dir = tmp_path / "sa"
     sa_dir.mkdir()
     (sa_dir / "only.json").write_text("{}")
     conf = tmp_path / "rclone.conf"
     _write_conf(conf, "[MP]\ntype = drive\nservice_account_file = /old/a.json\n")
-    r = pt.ensure_sa_rotation(conf, sa_dir)
+    state = tmp_path / "state.json"
+    r = pt.ensure_sa_rotation(conf, sa_dir, state_path=state)
     assert r["mode"] == "single"
     cfg = configparser.ConfigParser()
     cfg.read(conf, encoding="utf-8")
     assert cfg.get("MP", "service_account_file").endswith("only.json")
 
 
-def test_sa_rotation_old_rclone_warns(tmp_path, monkeypatch):
-    monkeypatch.setattr(pt, "rclone_version_tuple", lambda bin_path="rclone": (1, 53, 3))
-    sa_dir = tmp_path / "sa"
-    sa_dir.mkdir()
-    (sa_dir / "a.json").write_text("{}")
-    (sa_dir / "b.json").write_text("{}")
-    conf = tmp_path / "rclone.conf"
-    _write_conf(conf, "[MP]\ntype = drive\nservice_account_file = /old/a.json\n")
-    r = pt.ensure_sa_rotation(conf, sa_dir)
-    # 老版本不支持目录轮换，降级单 SA + 告警
-    assert r["mode"] == "single"
-    assert r["warning"] and "1.55" in r["warning"]
-
-
-def test_sa_rotation_empty_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(pt, "rclone_version_tuple", lambda bin_path="rclone": (1, 66, 0))
+def test_sa_rotation_empty_dir(tmp_path):
     sa_dir = tmp_path / "sa"
     sa_dir.mkdir()
     conf = tmp_path / "rclone.conf"
@@ -109,18 +128,81 @@ def test_sa_rotation_empty_dir(tmp_path, monkeypatch):
     assert r["warning"]
 
 
-def test_sa_rotation_idempotent(tmp_path, monkeypatch):
-    monkeypatch.setattr(pt, "rclone_version_tuple", lambda bin_path="rclone": (1, 66, 0))
+def test_sa_rotation_missing_conf(tmp_path):
+    sa_dir = tmp_path / "sa"
+    sa_dir.mkdir()
+    (sa_dir / "a.json").write_text("{}")
+    r = pt.ensure_sa_rotation(tmp_path / "nope.conf", sa_dir)
+    assert r["changed"] is False
+    assert r["warning"]
+
+
+def test_sa_rotation_state_corrupted_recovers(tmp_path):
+    # 状态文件损坏时从头开始，不抛异常
     sa_dir = tmp_path / "sa"
     sa_dir.mkdir()
     (sa_dir / "a.json").write_text("{}")
     (sa_dir / "b.json").write_text("{}")
     conf = tmp_path / "rclone.conf"
     _write_conf(conf, "[MP]\ntype = drive\nservice_account_file = /old/a.json\n")
-    r1 = pt.ensure_sa_rotation(conf, sa_dir)
-    assert r1["changed"] is True
-    r2 = pt.ensure_sa_rotation(conf, sa_dir)
-    assert r2["changed"] is False  # 第二次幂等
+    state = tmp_path / "state.json"
+    state.write_text("not-json{{{", encoding="utf-8")
+    r = pt.ensure_sa_rotation(conf, sa_dir, state_path=state)
+    assert r["changed"] is True
+    assert r["sa_file"].endswith("a.json")
+
+
+# ---------------------------------------------------------------- 2b. 缓存配置
+def test_build_cache_args_defaults():
+    args = pt.build_rclone_cache_args(cache_dir="/tmp", max_size="5G")
+    joined = " ".join(args)
+    assert "--cache-dir" in args
+    assert args[args.index("--cache-dir") + 1] == "/tmp"
+    assert "--vfs-cache-max-size" in args
+    assert args[args.index("--vfs-cache-max-size") + 1] == "5G"
+    assert "--vfs-cache-max-age" in args
+    assert "--vfs-cache-min-free-space" in args
+    assert "--dir-cache-time" in args
+
+
+def test_build_cache_args_auto_size(tmp_path):
+    # max_size=None 时自动按磁盘计算
+    args = pt.build_rclone_cache_args(cache_dir=str(tmp_path))
+    idx = args.index("--vfs-cache-max-size")
+    assert args[idx + 1].endswith("G")
+
+
+def test_mount_args_with_cache():
+    cache = pt.build_rclone_cache_args(cache_dir="/tmp", max_size="5G")
+    args = pt.build_rclone_mount_args(cache_args=cache)
+    assert "--vfs-cache-max-size" in args
+    assert args[args.index("--vfs-cache-max-size") + 1] == "5G"
+    # 默认 VFS 参数仍在
+    assert "--vfs-read-chunk-size" in args
+
+
+def test_mount_args_cache_user_override():
+    # 用户 extra 可覆盖缓存参数
+    cache = pt.build_rclone_cache_args(cache_dir="/tmp", max_size="5G")
+    args = pt.build_rclone_mount_args(
+        extra=["--vfs-cache-max-size", "10G"], cache_args=cache)
+    assert args.count("--vfs-cache-max-size") == 1
+    assert args[args.index("--vfs-cache-max-size") + 1] == "10G"
+
+
+def test_check_disk_pressure_ok(tmp_path):
+    r = pt.check_disk_pressure(cache_dir=str(tmp_path), min_free_gb=0.001)
+    assert r["ok"] is True
+    assert r["total_gb"] > 0
+
+
+def test_check_disk_pressure_low():
+    # 阈值设得极高，必然触发告警
+    import tempfile
+    r = pt.check_disk_pressure(cache_dir=tempfile.gettempdir(),
+                               min_free_gb=999999999.0)
+    assert r["ok"] is False
+    assert r["warning"]
 
 
 # ---------------------------------------------------------------- 3. 并发限流
