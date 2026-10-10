@@ -13,7 +13,9 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
+from backend import models
 from backend.models import SystemConfig
+from backend.api.admin_core import get_current_admin
 from backend.emby_server import models as emby_models
 
 router = APIRouter(prefix="/api/homepage/sections", tags=["首页-板块排序"])
@@ -57,8 +59,16 @@ def get_section_order(db: Session = Depends(get_db)):
 
 
 @router.put("/order")
-def set_section_order(body: OrderUpdate, db: Session = Depends(get_db)):
-    """保存板块顺序。body: {"order": [24, 22, 26, ...]}"""
+def set_section_order(
+    body: OrderUpdate,
+    db: Session = Depends(get_db),
+    _admin: models.WebUser = Depends(get_current_admin),
+):
+    """保存板块顺序。body: {"order": [24, 22, 26, ...]}
+
+    P1 修复（审查）：此前无任何鉴权，匿名可改写全站首页板块排序。
+    GET 保持公开（首页渲染需要），PUT 仅管理员。
+    """
     # 校验：所有 id 必须是存在的 library
     if body.order:
         existing_ids = {
