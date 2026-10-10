@@ -1863,8 +1863,21 @@ def _worker_loop(worker_id: int) -> None:
     # _claim_batch 提交后不要让 ORM 条目过期；否则下面访问 series_id / file_path
     # 会重新 SELECT，打开一个事务，再把它带进 FUSE/TMDB 慢 IO。
     db.expire_on_commit = False
+    # v2.54.0 统一任务调度：函数内导入 task_scheduler（它内部全是延迟导入，
+    # 无循环导入风险）。扫描（用户触发）优先于刮削（后台）——有扫描在等时让路。
+    from backend.emby_server import task_scheduler as _ts
+
     try:
         while not _stop_event.is_set():
+            # SCAN_PREEMPT_ENRICH=0 可关闭，回退到旧行为（各自抢资源）。
+            try:
+                if _ts.should_enrich_yield():
+                    _ts.note_enrich_yielded(_ts.ENRICH_PREEMPT_WAIT_SEC)
+                    _stop_event.wait(_ts.ENRICH_PREEMPT_WAIT_SEC)
+                    continue
+            except Exception:
+                # 调度器异常不能阻断刮削：按"不让路"继续
+                pass
             try:
                 batch = _claim_batch(db, ENRICH_BATCH)
             except Exception as exc:  # noqa: BLE001
