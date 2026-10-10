@@ -892,6 +892,8 @@ a.sh-num {
   text-decoration: none;
   color: var(--au-text);
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 a.sh-num .num {
@@ -902,6 +904,9 @@ a.sh-num .num {
   letter-spacing: 0.01em;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 a.sh-num .unit {
@@ -1475,8 +1480,8 @@ button.store-pay-btn:active {
   grid-auto-flow: column;
   grid-auto-columns: min(78%, 320px);
   gap: 12px;
-  margin: 0;
-  padding: 0 0 4px;
+  margin: -8px -4px -12px;
+  padding: 8px 4px 12px;
   overflow-x: auto;
   scroll-snap-type: x mandatory;
   -webkit-overflow-scrolling: touch;
@@ -1496,6 +1501,8 @@ button.store-pay-btn:active {
     grid-auto-flow: row;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     overflow: visible;
+    margin: 0;
+    padding: 0;
   }
 }
 
