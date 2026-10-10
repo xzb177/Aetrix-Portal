@@ -18,10 +18,17 @@ from unittest import mock
 def _load_scheduler():
     """隔离加载 task_scheduler（避免 backend 包的重量级导入）"""
     import importlib.util
+    import os
 
+    # 用测试文件位置推导仓库路径，不硬编码
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(here)
+    mod_path = os.path.join(
+        repo_root, "backend", "emby_server", "task_scheduler.py"
+    )
     spec = importlib.util.spec_from_file_location(
         "task_scheduler_under_test",
-        "/home/hatch/workspace/ap-task/repo/backend/emby_server/task_scheduler.py",
+        mod_path,
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
