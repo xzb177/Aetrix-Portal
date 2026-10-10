@@ -22,6 +22,60 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 15.0
 
+_DNS_HINTS = (
+    "name or service not known",
+    "nodename nor servname",
+    "getaddrinfo failed",
+    "name does not resolve",
+    "temporary failure in name resolution",
+)
+
+
+def _network_error_hint(exc: httpx.HTTPError) -> str:
+    """把 httpx 的网络异常翻译成"是什么 + 怎么查"的中文提示
+
+    原始异常文本（如 ``[Errno 111] Connection refused``）对服主是天书，
+    这里按异常类型给出可操作的排查步骤。注意顺序：httpx 里 ConnectTimeout
+    同时是 ConnectError 的子类，必须先判超时。
+    """
+    text = str(exc).lower()
+    if isinstance(exc, httpx.ConnectTimeout):
+        return ("连接 qBittorrent 超时：目标地址长时间无响应。"
+                "排查：1) 地址和端口是否正确 2) 服务器防火墙/安全组是否放行该端口 "
+                "3) 是否在用公网地址访问内网服务")
+    if isinstance(exc, httpx.ConnectError):
+        if "refused" in text:
+            return ("连不上 qBittorrent：目标地址拒绝连接。"
+                    "排查：1) qBittorrent 是否正在运行 2) 地址和端口是否正确 "
+                    "3) qB 的 Web UI 是否已启用（qB「选项 → Web UI」）")
+        if "ssl" in text or "certificate" in text or "wrong version number" in text:
+            return ("HTTPS 握手失败：对面可能没开 HTTPS。"
+                    "排查：地址改成 http:// 再试，或在 qB「选项 → Web UI」里启用 HTTPS")
+        if any(h in text for h in _DNS_HINTS):
+            return "域名解析失败：请检查地址中的域名/IP 是否写对"
+        return (f"无法与 qBittorrent 建立连接：{exc}。"
+                "排查：1) 地址和端口是否正确 2) 网络是否通 3) 防火墙是否放行")
+    if isinstance(exc, httpx.TimeoutException):
+        return ("qBittorrent 响应超时：服务可能卡住或网络太慢。"
+                "排查：1) qB 是否正常运行 2) 稍后重试")
+    if isinstance(exc, httpx.ProxyError):
+        return f"代理服务器连接失败：{exc}，请检查代理配置"
+    return f"连接 qBittorrent 失败：{exc}"
+
+
+def _http_status_hint(status_code: int, action: str = "登录") -> str:
+    """登录/请求接口返回 4xx/5xx 时的可排查提示"""
+    if status_code == 401:
+        return ("qBittorrent 要求身份验证（HTTP 401）：可能是中间有反向代理加了认证，"
+                "请检查代理配置，或确认地址直接指向 qBittorrent")
+    if status_code == 404:
+        return (f"qBittorrent {action}返回 404：地址路径不对"
+                "（一般填到端口即可，如 http://192.168.1.10:8080），或 qB 的 Web UI 未启用")
+    if status_code in (500, 502, 503, 504):
+        return (f"qBittorrent/网关返回 HTTP {status_code}：服务或反向代理异常，"
+                "请检查 qB 是否正常运行")
+    return f"qBittorrent {action}返回 HTTP {status_code}"
+
 
 def _base(url: str) -> str:
     return (url or "").strip().rstrip("/")
@@ -36,24 +90,32 @@ async def _login(client: httpx.AsyncClient, base_url: str, username: str, passwo
             headers={"Referer": _base(base_url)},
         )
     except httpx.HTTPError as exc:
-        return {"ok": False, "message": f"无法连接 qBittorrent: {exc}"}
+        return {"ok": False, "message": _network_error_hint(exc)}
+    except httpx.InvalidURL as exc:
+        return {"ok": False, "message": f"qBittorrent 地址格式有误：{exc}，请检查是否多写了字符或端口不对"}
 
     body = (resp.text or "").strip()
     if resp.status_code == 403 or body.lower().startswith("banned"):
         return {"ok": False, "message": "qBittorrent 因多次登录失败已暂时封禁该 IP，请稍后再试"}
     if resp.status_code >= 400:
-        return {"ok": False, "message": f"qBittorrent 登录返回 HTTP {resp.status_code}"}
+        return {"ok": False, "message": _http_status_hint(resp.status_code)}
     if body.lower().startswith("fails"):
         return {"ok": False, "message": "qBittorrent 用户名或密码不对"}
     # qB 用 SID Cookie 表示会话已建立；拿不到就说明对面不是 qB（或中间有反向代理吃掉了 Cookie）
     if not (resp.cookies.get("SID") or client.cookies.get("SID")):
-        return {"ok": False, "message": "qBittorrent 没有返回会话 Cookie（地址可能指向别的服务）"}
+        return {"ok": False, "message":
+                "qBittorrent 没有返回会话 Cookie（对面可能不是 qBittorrent）。"
+                "排查：1) 用浏览器打开该地址，确认是 qB 的 Web UI 登录页 "
+                "2) 地址一般填到端口即可，不要带多余路径 "
+                "3) 如经过反向代理，确认代理没有拦截或吃掉 Cookie"}
     return {"ok": True, "message": "登录成功"}
 
 
 async def version(base_url: str, username: str, password: str,
                   timeout: float = DEFAULT_TIMEOUT) -> dict:
     """查版本（同时也是「登录 + 会话可用」的证据）"""
+    if not _base(base_url):
+        return {"ok": False, "message": "没有填写 qBittorrent 的地址"}
     if not username:
         return {"ok": False, "message": "没有填写 qBittorrent 的用户名"}
     try:
@@ -63,9 +125,11 @@ async def version(base_url: str, username: str, password: str,
                 return auth
             resp = await client.get(f"{_base(base_url)}/api/v2/app/version")
     except httpx.HTTPError as exc:
-        return {"ok": False, "message": f"查询版本失败: {exc}"}
+        return {"ok": False, "message": _network_error_hint(exc)}
+    except httpx.InvalidURL as exc:
+        return {"ok": False, "message": f"qBittorrent 地址格式有误：{exc}，请检查是否多写了字符或端口不对"}
     if resp.status_code >= 400:
-        return {"ok": False, "message": f"查询版本返回 HTTP {resp.status_code}"}
+        return {"ok": False, "message": _http_status_hint(resp.status_code, action="查询版本")}
     return {"ok": True, "message": f"已连接 qBittorrent {resp.text.strip()}", "version": resp.text.strip()}
 
 
@@ -109,6 +173,8 @@ async def add_torrent(base_url: str, username: str, password: str, link: str,
         return {"ok": False, "message": "没有可提交的下载链接：请填写磁力链接或 .torrent 地址"}
     if not (link.startswith("magnet:") or link.startswith("http://") or link.startswith("https://")):
         return {"ok": False, "message": "下载链接必须是 magnet: 磁力链接或 http(s) 的 .torrent 地址"}
+    if not _base(base_url):
+        return {"ok": False, "message": "没有填写 qBittorrent 的地址"}
 
     form: dict = {"urls": link}
     if save_path:
@@ -125,10 +191,11 @@ async def add_torrent(base_url: str, username: str, password: str, link: str,
                 return auth
             resp = await client.post(f"{_base(base_url)}/api/v2/torrents/add", data=form)
     except httpx.HTTPError as exc:
-        return {"ok": False, "message": f"提交下载任务失败: {exc}"}
-
+        return {"ok": False, "message": _network_error_hint(exc)}
+    except httpx.InvalidURL as exc:
+        return {"ok": False, "message": f"qBittorrent 地址格式有误：{exc}，请检查是否多写了字符或端口不对"}
     if resp.status_code >= 400:
-        return {"ok": False, "message": f"qBittorrent 返回 HTTP {resp.status_code}"}
+        return {"ok": False, "message": _http_status_hint(resp.status_code, action="提交下载任务")}
     body = (resp.text or "").strip()
     if body and not body.lower().startswith("ok"):
         return {"ok": False, "message": f"qBittorrent 未接受该链接：{body[:120]}"}
