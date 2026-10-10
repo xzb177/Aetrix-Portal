@@ -1447,7 +1447,7 @@ a.ticket-stat:hover { background: var(--au-surface-2); }
   white-space: nowrap;
 }
 
-.stat-icon { color: var(--au-primary); flex-shrink: 0; }
+.stat-icon { color: var(--au-text-2); flex-shrink: 0; }
 
 .stat-badge {
   margin-left: auto;
@@ -2220,5 +2220,6 @@ section.todo-card[aria-hidden='true'] { padding: 1rem; }
   }
 }
 </style>
+
 
 
