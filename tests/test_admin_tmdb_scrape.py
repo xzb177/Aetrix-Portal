@@ -16,8 +16,13 @@ from backend.emby_server.tmdb import TmdbClient, _split_keys
 
 
 @pytest.fixture(autouse=True)
-def _clean_cache():
+def _clean_cache(monkeypatch):
     TmdbClient._cache.clear()
+    # httpx 在构造 Client 时读取代理环境变量；CI/本地代理 URL 格式异常会导致
+    # 与本测试无关的 InvalidURL 误报，这里先清掉
+    for _var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+                 "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY"):
+        monkeypatch.delenv(_var, raising=False)
     yield
     TmdbClient._cache.clear()
 
