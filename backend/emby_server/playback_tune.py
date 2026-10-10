@@ -1,12 +1,11 @@
 """开箱即用的播放优化通用能力。
 
 用户部署 Aetrix、挂载存储后，不用手动调任何参数，播放就好好工作。
-本模块收敛四块能力，全项目只此一处实现（横切能力只许一套）：
+本模块收敛三块能力，全项目只此一处实现（横切能力只许一套）：
 
 1. rclone 挂载参数自动优化（``DEFAULT_RCLONE_VFS_ARGS``）
 2. SA 自动轮换（``ensure_sa_rotation``）
 3. 单文件并发 Range 限流（``RangeConcurrencyLimiter``）
-4. 移动端 4K 透明降级（``maybe_downgrade_for_client``）
 """
 
 from __future__ import annotations
@@ -264,90 +263,7 @@ RANGE_LIMITER = RangeConcurrencyLimiter()
 
 
 # ---------------------------------------------------------------------------
-# 4. 移动端 4K 透明降级
-# ---------------------------------------------------------------------------
-# 手机屏看 4K 是浪费：22GB 的 2160p 在手机上和 3.8GB 的 1080p 肉眼无差，
-# 但带宽差 6 倍。PlaybackInfo 里如果同部片有更低分辨率版本，移动端直接
-# 给低版本（客户端无感，不用转码、不用用户手动切）。
-MOBILE_UA_PATTERNS = (
-    "iphone", "ipad", "ipod", "android", "mobile",
-    "senplayer",  # iOS 第三方播放器常见 UA 关键字
-    "vidhub",
-)
-
-
-def is_mobile_client(user_agent: Optional[str]) -> bool:
-    """UA 是否像手机/平板（含常见第三方播放器）。"""
-    if not user_agent:
-        return False
-    ua = user_agent.lower()
-    return any(p in ua for p in MOBILE_UA_PATTERNS)
-
-
-def maybe_downgrade_for_client(item: Any, user_agent: Optional[str],
-                              db: Any) -> Any:
-    """移动端 4K 透明降级：有同部 ≤1080p 版本时返回那个，否则原样返回。
-
-    ``item`` 是 MediaItem ORM 对象；``db`` 是 Session。只读不写库。
-    判定"同部"：优先 tmdb_id + library_id + item_type，无 tmdb_id 时回退
-    归一化标题（复用 dedup.normalize_name）+ 年份。
-    """
-    try:
-        height = int(getattr(item, "height", 0) or 0)
-    except (TypeError, ValueError):
-        return item
-    if height <= 1080 or not is_mobile_client(user_agent):
-        return item
-
-    try:
-        from backend.emby_server import dedup  # 延迟导入，避免循环
-        from backend.emby_server import models as em
-    except Exception:  # noqa: BLE001
-        return item
-
-    try:
-        q = db.query(em.MediaItem).filter(
-            em.MediaItem.library_id == item.library_id,
-            em.MediaItem.item_type == item.item_type,
-            em.MediaItem.height.isnot(None),
-            em.MediaItem.height <= 1080,
-            em.MediaItem.height > 0,
-            em.MediaItem.id != item.id,
-        )
-        tmdb_id = getattr(item, "tmdb_id", None)
-        if tmdb_id:
-            q = q.filter(em.MediaItem.tmdb_id == tmdb_id)
-        else:
-            norm = dedup.normalize_name(getattr(item, "name", ""))
-            if not norm:
-                return item
-            # 归一化标题相等且年份一致才算同部，避免张冠李戴
-            q = q.filter(em.MediaItem.name.isnot(None))
-            candidates = q.limit(50).all()
-            same = [c for c in candidates
-                    if dedup.normalize_name(c.name) == norm
-                    and getattr(c, "production_year", None) == getattr(item, "production_year", None)]
-            if not same:
-                return item
-            # 取分辨率最高的那个 ≤1080p 版本
-            same.sort(key=lambda c: int(c.height or 0), reverse=True)
-            chosen = same[0]
-            logger.info("移动端 4K 透明降级：%s (%sp) → %s (%sp)",
-                        item.name, height, chosen.name, chosen.height)
-            return chosen
-        chosen = q.order_by(em.MediaItem.height.desc()).first()
-        if chosen is None:
-            return item
-        logger.info("移动端 4K 透明降级：%s (%sp) → %s (%sp)",
-                    item.name, height, chosen.name, chosen.height)
-        return chosen
-    except Exception:  # noqa: BLE001
-        logger.exception("透明降级查询失败，回退原片")
-        return item
-
-
-# ---------------------------------------------------------------------------
-# 5. 大盘自动放大 VFS 缓存（分离架构 / 流节点）
+# 4. 大盘自动放大 VFS 缓存（分离架构 / 流节点）
 # ---------------------------------------------------------------------------
 # 磁盘总量 >= BIG_DISK_THRESHOLD_GB（默认 500GB）时，VFS 缓存自动给到
 # 空闲空间的 CACHE_DISK_RATIO（默认 70%）：热门内容常驻本地，回源大幅减少。
