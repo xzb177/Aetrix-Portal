@@ -84,9 +84,9 @@
 
   /* 文字：暖白 */
   --au-text: #f3ede4;
-  --au-text-2: rgba(243, 237, 228, 0.72);
-  --au-text-3: rgba(243, 237, 228, 0.6);
-  --au-text-4: rgba(243, 237, 228, 0.42);
+  --au-text-2: rgba(243, 237, 228, 0.75);
+  --au-text-3: rgba(243, 237, 228, 0.55);
+  --au-text-4: rgba(243, 237, 228, 0.38);
 
   /* 边框：发丝线 */
   --au-border: rgba(245, 235, 220, 0.08);
@@ -716,3 +716,4 @@ h1, h2, .title, .page-title {
     transform: scale(1.05);
   }
 }
+
