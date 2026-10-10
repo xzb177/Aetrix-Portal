@@ -207,7 +207,9 @@ def ask(db: Session, question: str, history: Optional[list[dict]] = None) -> dic
             continue
         messages.append({"role": role, "content": content[:4000]})
     messages = messages[-8:]
-    messages.append({"role": "user", "content": question})
+    # P2 修复（审查）：question 无长度限制，单个超大 prompt 可烧掉 API 额度。
+    # 与 history 同口径截断到 4000 字符。
+    messages.append({"role": "user", "content": question[:4000]})
     return chat(db, messages)
 
 
