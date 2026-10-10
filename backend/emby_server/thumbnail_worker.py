@@ -199,35 +199,60 @@ def extract_thumbnails(item) -> int:
 
 
 def _extract_once() -> Tuple[int, int]:
-    """跑一轮抽帧：返回 (检查条数, 生成条目数)。"""
+    """跑一轮抽帧：返回 (检查条数, 生成条目数)。
+
+    P1 修复（审查）：此前 order_by(id).limit(500) 无游标，每轮永远只看
+    id 最小的 500 条，靠后的 movie/episode 永远抽不出缩略图。
+    现用 SystemConfig 持久化游标（WHERE id > last_id），到尾后绕回。
+    """
     from backend.database import SessionLocal
     from backend.emby_server import models as em
+    from backend.models import SystemConfig
+
+    CURSOR_KEY = "thumbnail_cursor"
 
     checked = 0
     done = 0
     db = SessionLocal()
     try:
+        cur_row = db.query(SystemConfig).filter(
+            SystemConfig.key == CURSOR_KEY).first()
+        try:
+            last_id = int(cur_row.value) if cur_row and cur_row.value else 0
+        except (ValueError, TypeError):
+            last_id = 0
+
+        def _batch(after_id: int):
+            return (
+                db.query(em.MediaItem.id)
+                .filter(
+                    em.MediaItem.item_type.in_(("movie", "episode")),
+                    em.MediaItem.deleted_at.is_(None),
+                    em.MediaItem.merged_into_id.is_(None),
+                    em.MediaItem.duration_ticks > 0,
+                    em.MediaItem.file_path.isnot(None),
+                    ~em.MediaItem.file_path.like("mount://%"),
+                    em.MediaItem.id > after_id,
+                )
+                .order_by(em.MediaItem.id.asc())
+                .limit(THUMBNAIL_BATCH_LIMIT)
+                .all()
+            )
+
+        rows = _batch(last_id)
+        if not rows and last_id > 0:
+            last_id = 0
+            rows = _batch(0)
+
+        max_id = last_id
         # 已探测（有 duration）且无缩略图的 movie/episode
         # mount:// 路径在 SQL 层直接过滤（_resolve_video_path 会跳过，别拉回来再扔）
-        # order_by(id) + 只取 id 列做游标，避免大库下永远只扫"任意" N 条
-        rows = (
-            db.query(em.MediaItem.id)
-            .filter(
-                em.MediaItem.item_type.in_(("movie", "episode")),
-                em.MediaItem.deleted_at.is_(None),
-                em.MediaItem.merged_into_id.is_(None),
-                em.MediaItem.duration_ticks > 0,
-                em.MediaItem.file_path.isnot(None),
-                ~em.MediaItem.file_path.like("mount://%"),
-            )
-            .order_by(em.MediaItem.id.asc())
-            .limit(THUMBNAIL_BATCH_LIMIT)
-            .all()
-        )
         # 按 id 取全行（分批，避免 1 万 ORM 常驻）
         for (item_id,) in rows:
             if _stop_event.is_set():
                 break
+            if item_id > max_id:
+                max_id = item_id
             item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
             if not item or has_thumbnails(item.guid):
                 continue
@@ -240,6 +265,12 @@ def _extract_once() -> Tuple[int, int]:
                 logger.warning("缩略图提取失败 %s: %s", item.name, e)
             # 及时释放 ORM，避免 identity map 无限增长
             db.expunge_all()
+        if max_id > last_id:
+            if cur_row is None:
+                db.add(SystemConfig(key=CURSOR_KEY, value=str(max_id)))
+            else:
+                cur_row.value = str(max_id)
+            db.commit()
         return checked, done
     finally:
         db.close()
