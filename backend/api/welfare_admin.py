@@ -224,9 +224,6 @@ def welfare_request_done(
 # ==================== 公益配置 ====================
 
 WELFARE_CONFIG_KEYS = {
-    "points_signin_min": "1",
-    "points_signin_max": "3",
-    "points_signin_streak_bonus": "2",
     "points_chat_daily_cap": "20",
     "points_redeem_7d": "100",
     "points_redeem_30d": "300",

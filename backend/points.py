@@ -11,10 +11,10 @@
 - welfare_signin：【已废弃 2026-10-09】转发到 backend.api.economy._do_checkin_core，
   签到已统一到 POST /api/user/economy/checkin（配置在系统设置→每日签到）
 
-SystemConfig 键（backend/api/economy._get_int_config 读取）：
-- points_signin_min=1, points_signin_max=3
-- points_signin_streak_bonus=2, points_signin_streak_days=7
-- points_signin_penalty_pct=15, points_signin_penalty_min=1, points_signin_penalty_max=3
+SystemConfig 键（实际生效的签到键在 backend/api/economy._checkin_rules 读取，
+管理后台「系统设置 → 每日签到」可配）：
+- checkin_base_min / checkin_base_max（基础积分随机范围）
+- checkin_streak_bonus（连签加成）
 - points_chat_daily_cap=20, points_chat_per_msg=1
 - points_redeem_7d=100, points_redeem_30d=300
 """

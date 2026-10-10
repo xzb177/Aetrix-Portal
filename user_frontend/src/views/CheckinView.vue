@@ -15,6 +15,7 @@ import TgBindCard from '@/components/TgBindCard.vue'
 const toast = useToast()
 
 const loading = ref(true)
+const loadError = ref(false)
 const status = ref<CheckinStatus | null>(null)
 const signing = ref(false)
 const justSigned = ref(false)
@@ -67,6 +68,7 @@ const todayReward = computed(() => {
 
 async function load() {
   loading.value = true
+  loadError.value = false
   try {
     const emptyLog = { total: 0, balance: 0, logs: [] as PointsLogEntry[] }
     const [s, log] = await Promise.all([
@@ -77,7 +79,7 @@ async function load() {
     rewardPreview.value = todayReward.value
     checkinLogs.value = log.logs.map(l => ({ id: l.id, amount: l.amount, created_at: l.created_at }))
   } catch {
-    /* 静默 */
+    loadError.value = true
   } finally {
     loading.value = false
   }
@@ -125,6 +127,7 @@ onMounted(() => { tgApi.status().then(s => { tgStatus.value = s }).catch(() => {
             <div>
               <h1 class="sign-title">
                 <template v-if="loading">加载中…</template>
+                <template v-else-if="loadError && !status">加载失败</template>
                 <template v-else-if="!checkinEnabled">签到功能未开启</template>
                 <template v-else-if="justSigned">签到成功！</template>
                 <template v-else-if="status?.checked_today">今日已签到</template>
@@ -142,7 +145,7 @@ onMounted(() => { tgApi.status().then(s => { tgStatus.value = s }).catch(() => {
           <button
             class="sign-btn"
             :class="{ done: status?.checked_today || justSigned || !checkinEnabled, celebrate: justSigned }"
-            :disabled="loading || signing || status?.checked_today || !checkinEnabled"
+            :disabled="loading || signing || status?.checked_today || !checkinEnabled || (loadError && !status)"
             @click="handleSign"
           >
             <!-- 底层光泽：hover 时扫过（纯 transform，不重绘） -->
@@ -169,6 +172,10 @@ onMounted(() => { tgApi.status().then(s => { tgStatus.value = s }).catch(() => {
             </span>
           </button>
           <p v-if="!checkinEnabled" class="sign-off-tip">管理员已关闭签到，开启后即可继续累计连签</p>
+          <div v-if="loadError && !status" class="load-error">
+            <p class="load-error-text">加载失败，请检查网络后重试</p>
+            <button class="au-btn au-btn-ghost au-btn-sm" type="button" @click="load">重新加载</button>
+          </div>
         </div>
 
         <div class="sign-divider" aria-hidden="true" />
@@ -377,6 +384,19 @@ onMounted(() => { tgApi.status().then(s => { tgStatus.value = s }).catch(() => {
   margin: 0.625rem 0 0;
   font-size: 0.8125rem;
   color: var(--au-warning);
+}
+
+.load-error {
+  margin: 0.625rem 0 0;
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.load-error-text {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--au-danger, #e5484d);
 }
 
 .sign-divider {

@@ -45,6 +45,7 @@ const initial = computed(() => (user.value?.username || 'U').charAt(0).toUpperCa
 // ===== 数据 =====
 const loading = ref(true)
 const account = ref<AccountCard | null>(null)
+const accountError = ref(false)
 const stats = ref<WatchStats | null>(null)
 const subscriptions = ref<MySubscription[]>([])
 
@@ -274,8 +275,10 @@ function deviceAgo(iso?: string | null, isBlocked = false) {
 
 function refreshAccount() {
   loading.value = true
+  accountError.value = false
   embyApi.getAccountCard()
     .then(a => { account.value = a })
+    .catch(() => { accountError.value = true })
     .finally(() => { loading.value = false })
 }
 
@@ -299,7 +302,9 @@ async function loadProfile(silent = false) {
     if (!silent || subs.length) subscriptions.value = subs
     // 播放路径只有中转一条，无需加载偏好
   } catch {
-    // 401 已由拦截器处理
+    // 401 已由拦截器处理；账号卡加载失败且无旧数据时标记，供模板展示错误与重试
+    // （静默刷新失败不覆盖已有数据）
+    if (!account.value) accountError.value = true
   } finally {
     loading.value = false
     hasLoaded.value = true
@@ -368,6 +373,12 @@ function formatDate(iso?: string | null) {
             <RefreshCw :size="15" :class="{ spinning: loading }" />
           </button>
         </header>
+
+        <!-- 账号卡加载失败：给错误说明 + 重试，不再满屏显示"—" -->
+        <div v-if="accountError && !account" class="account-error">
+          <p class="account-error-text">账号信息加载失败，请检查网络后重试</p>
+          <button class="btn ghost" type="button" @click="refreshAccount">重新加载</button>
+        </div>
 
         <!-- 公益服：一进来就说清这个服不要钱、规则是什么，别让用户去找开通入口 -->
         <div v-if="isFreeRealm" class="rows">
@@ -1124,6 +1135,19 @@ html[data-theme="light"] .hero-ambiance {
 }
 
 /* ==================== Emby 账号信息行 ==================== */
+.account-error {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.875rem 0;
+}
+
+.account-error-text {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--au-danger, #e5484d);
+}
+
 .rows {
   display: flex;
   flex-direction: column;
