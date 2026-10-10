@@ -38,6 +38,52 @@ def test_login_ok():
     assert run(go())["ok"] is True
 
 
+# ---------- 新版 qB 会话 Cookie 名（QBT_SID_<port>） ----------
+
+def _resp_cookie(name, value="sess123"):
+    def handler(request):
+        return httpx.Response(200, text="Ok.",
+                              headers={"set-cookie": f"{name}={value}; Path=/"})
+    return handler
+
+
+def test_login_ok_qbt_sid_port_cookie():
+    """生产实测：新版 qB 返回 QBT_SID_<port> 而不是 SID，也必须认"""
+    async def go():
+        async with _client(_resp_cookie("QBT_SID_12354")) as client:
+            return await qbittorrent._login(client, "http://167.17.76.115:12354", "admin", "x")
+    assert run(go())["ok"] is True
+
+
+def test_login_ok_sid_prefix_variant():
+    async def go():
+        async with _client(_resp_cookie("SID_abc")) as client:
+            return await qbittorrent._login(client, "http://127.0.0.1:8080", "admin", "x")
+    assert run(go())["ok"] is True
+
+
+def test_login_ok_cookie_only_in_jar():
+    """Cookie 只落在 client jar 里（响应头没带）也要认"""
+    async def go():
+        async with _client(lambda r: _resp(200, "Ok.")) as client:
+            client.cookies.set("QBT_SID_8080", "jar-only", domain="127.0.0.1", path="/")
+            return await qbittorrent._login(client, "http://127.0.0.1:8080", "admin", "x")
+    assert run(go())["ok"] is True
+
+
+def test_session_cookie_helper():
+    jars = [httpx.Cookies()]
+    jars[0].set("QBT_SID_12354", "v1", domain="h", path="/")
+    assert qbittorrent._session_cookie_value(*jars) == "v1"
+    jars = [httpx.Cookies()]
+    jars[0].set("SID", "v2", domain="h", path="/")
+    assert qbittorrent._session_cookie_value(*jars) == "v2"
+    jars = [httpx.Cookies()]
+    jars[0].set("other", "v3", domain="h", path="/")
+    assert qbittorrent._session_cookie_value(*jars) is None
+    assert qbittorrent._session_cookie_value() is None
+
+
 # ---------- 网络异常分类 ----------
 
 def _raise(exc):

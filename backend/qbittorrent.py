@@ -81,6 +81,35 @@ def _base(url: str) -> str:
     return (url or "").strip().rstrip("/")
 
 
+# qBittorrent 会话 Cookie 名：
+# - 老版本：SID
+# - 新版本：QBT_SID_<port>（为多实例做了端口隔离；生产实测 qB 返回 QBT_SID_12354）
+_SESSION_COOKIE_EXACT = ("SID",)
+_SESSION_COOKIE_PREFIXES = ("QBT_SID", "SID_")
+
+
+def _session_cookie_value(*jars) -> Optional[str]:
+    """从一个或多个 cookie 容器里找出 qB 的会话 Cookie 值，找不到返回 None
+
+    只认 ``SID`` 会导致新版本 qB 登录成功也被判失败（实测返回的是
+    ``QBT_SID_<port>``），这里把两种命名都认。
+    """
+    for jar in jars:
+        try:
+            names = list(jar.keys())
+        except Exception:
+            continue
+        for name in names:
+            if name in _SESSION_COOKIE_EXACT or name.startswith(_SESSION_COOKIE_PREFIXES):
+                try:
+                    value = jar.get(name)
+                except Exception:
+                    value = None
+                if value:
+                    return value
+    return None
+
+
 async def _login(client: httpx.AsyncClient, base_url: str, username: str, password: str) -> dict:
     """登录拿 SID（写进 client 的 cookie jar，后续请求自动带上）"""
     try:
@@ -101,8 +130,9 @@ async def _login(client: httpx.AsyncClient, base_url: str, username: str, passwo
         return {"ok": False, "message": _http_status_hint(resp.status_code)}
     if body.lower().startswith("fails"):
         return {"ok": False, "message": "qBittorrent 用户名或密码不对"}
-    # qB 用 SID Cookie 表示会话已建立；拿不到就说明对面不是 qB（或中间有反向代理吃掉了 Cookie）
-    if not (resp.cookies.get("SID") or client.cookies.get("SID")):
+    # qB 用会话 Cookie 表示登录成功：老版本叫 SID，新版本叫 QBT_SID_<port>；
+    # 拿不到才说明对面可能不是 qB（或中间有反向代理吃掉了 Cookie）
+    if not _session_cookie_value(resp.cookies, client.cookies):
         return {"ok": False, "message":
                 "qBittorrent 没有返回会话 Cookie（对面可能不是 qBittorrent）。"
                 "排查：1) 用浏览器打开该地址，确认是 qB 的 Web UI 登录页 "
