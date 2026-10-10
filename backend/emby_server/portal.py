@@ -300,6 +300,12 @@ def _realm_view_granted(db: Session, user: models.WebUser, realm_id: int | None
     return subscriptions.view_grant(db, user, realm_id)
 
 
+# 用心播放器一键导入的基础 URL（不含查询参数）。
+# ⚠️ 未核实：公开渠道查不到用心播放器的一键导入 scheme，此为占位推测值；
+# 合并前必须请用户提供 App 内实际的一键导入链接，改这一处常量即可。
+YONGXIN_IMPORT_URL = "yongxin://import"
+
+
 def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None,
                   request: Request | None = None) -> dict:
     """构造账号卡（不含密码明文；导入 scheme 需用户已在播放器中保存密码）
@@ -345,7 +351,10 @@ def _account_card(user: models.WebUser, db: Session, realm_id: int | None = None
         "access_note": realms.access_note_of(db, realm_id),
         "allow_download": subscriptions.download_allowed(db, realm_id),
         "import_schemes": {} if (external or not granted) else {
-            "forward": f"forward://import?type=emby&scheme={os.getenv('EMBY_URL_SCHEME', 'http')}&host={host}&username={user.emby_username}",
+            # 用心播放器一键导入（2026-10-10 用户要求替换 forward）。
+            # ⚠️ URL scheme 未能从公开渠道核实（已搜多轮无果），当前为按常见格式推测的占位值，
+            # 合并前必须请用户确认 App 内实际的一键导入链接格式，收到后改 YONGXIN_IMPORT_URL 这一处即可。
+            "用心播放器": f"{YONGXIN_IMPORT_URL}?type=emby&scheme={os.getenv('EMBY_URL_SCHEME', 'http')}&host={host}&username={user.emby_username}",
             "senplayer": f"senplayer://importserver?type=emby&name=Aetrix&address={url}&username={user.emby_username}",
         },
         "view_permission": {
