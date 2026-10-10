@@ -160,6 +160,7 @@ def test_enrich_fetch_prewarms_the_images_it_will_apply(monkeypatch, downloads):
         lambda *a, **k: ({"id": 7, "name": "剧名", "poster_path": "/p.jpg",
                           "backdrop_path": "/b.jpg"}, {"backdrop_path": "/b.jpg"}),
     )
+    monkeypatch.setattr("backend.emby_server.douban.enabled", lambda db: False)
 
     item = _item(item_type="series", name="剧名", production_year=2020,
                  file_path="", library_id=1, size=0, tmdb_id=None,
