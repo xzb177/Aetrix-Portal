@@ -689,6 +689,61 @@ class IntroMarker(Base):
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
+class ChaseFileSnapshot(Base):
+    """追新文件指纹快照（P0-2）：文件级 diff 取代目录 mtime 过滤。
+
+    生产实证：Drive 上季目录 mtime=2026-07-30，但其内新剧集文件 mtime=2026-08-08，
+    旧实现按目录 mtime 整个跳过 → 新剧集永远发现不了。改为文件级 (size, mod_ts)
+    快照 diff：快照无记录=新增；size 或 mod_ts 变化=变更。
+    """
+
+    __tablename__ = "chase_file_snapshot"
+
+    library_id = Column(Integer, primary_key=True)
+    # mount://<id>（远程挂载）或本地绝对路径（本机目录）
+    source_key = Column(String(512), primary_key=True)
+    # 挂载内相对路径（以 / 开头）或相对本地根的路径
+    rel_path = Column(String(1024), primary_key=True)
+    size = Column(BigInteger, default=0)
+    mod_ts = Column(Float, default=0.0)
+    first_seen_at = Column(DateTime)
+    last_seen_at = Column(DateTime)
+
+
+class ChaseRun(Base):
+    """追新运行历史（P1-1）：poll（change_watcher）与 drive-changes 每轮各写一行。"""
+
+    __tablename__ = "chase_run"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    started_at = Column(DateTime, nullable=False)
+    finished_at = Column(DateTime)
+    source = Column(String(20), default="poll")  # poll / drive-changes
+    libs_checked = Column(Integer, default=0)
+    files_listed = Column(Integer, default=0)
+    new_found = Column(Integer, default=0)
+    scans_triggered = Column(Integer, default=0)
+    status = Column(String(10), default="ok")  # ok / partial / fail
+    error = Column(Text)
+
+
+class ChaseSourceState(Base):
+    """追新源状态（P1-1）：每个监听源（挂载/本地目录）一行。
+
+    last_ok_at 替代内存态 since_ts（容器重建不丢失）；last_snapshot_at 控制远程
+    快照 diff 每源每小时最多一次；consec_failures>=3 → 管理后台告警。
+    """
+
+    __tablename__ = "chase_source_state"
+
+    # mount://<id>（远程挂载）或本地绝对路径
+    source_key = Column(String(512), primary_key=True)
+    last_ok_at = Column(DateTime)
+    last_snapshot_at = Column(DateTime)
+    consec_failures = Column(Integer, default=0)
+    last_error = Column(Text)
+
+
 __all__ = [
     "Library",
     "ScanRun",
@@ -702,4 +757,7 @@ __all__ = [
     "LocalCacheEntry",
     "LocalCacheStat",
     "IntroMarker",
+    "ChaseFileSnapshot",
+    "ChaseRun",
+    "ChaseSourceState",
 ]

@@ -1007,7 +1007,77 @@ def get_chase_new(
     db: Session = Depends(get_db),
 ):
     """追新当前配置（开关 / 间隔 / 监听库 / 上次检查）"""
-    return {"success": True, **change_watcher.get_config(db)}
+    result = {"success": True, **change_watcher.get_config(db)}
+
+    try:
+        from backend.emby_server import drive_changes as dc_mod
+
+        result["drive_changes"] = dc_mod.status()
+    except Exception:
+        logger.warning("drive_changes.status() failed", exc_info=True)
+        result["drive_changes"] = {
+            "running": False,
+            "last_poll": None,
+            "last_changes": 0,
+            "last_libs_triggered": 0,
+        }
+
+    recent_runs: list = []
+    alerts: list = []
+    total_found = 0
+    try:
+        from sqlalchemy import func
+
+        run_rows = (
+            db.query(em.ChaseRun)
+            .order_by(em.ChaseRun.id.desc())
+            .limit(10)
+            .all()
+        )
+        recent_runs = [
+            {
+                "id": r.id,
+                "started_at": r.started_at.isoformat() if r.started_at else None,
+                "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+                "source": r.source,
+                "libs_checked": r.libs_checked,
+                "files_listed": r.files_listed,
+                "new_found": r.new_found,
+                "scans_triggered": r.scans_triggered,
+                "status": r.status,
+                "error": r.error,
+            }
+            for r in run_rows
+        ]
+
+        alert_rows = (
+            db.query(em.ChaseSourceState)
+            .filter(em.ChaseSourceState.consec_failures >= 3)
+            .all()
+        )
+        alerts = [
+            {
+                "source_key": a.source_key,
+                "consec_failures": a.consec_failures,
+                "last_error": a.last_error,
+                "last_ok_at": a.last_ok_at.isoformat() if a.last_ok_at else None,
+            }
+            for a in alert_rows
+        ]
+
+        total = db.query(func.sum(em.ChaseRun.new_found)).scalar()
+        total_found = int(total) if total is not None else 0
+    except Exception:
+        logger.warning("chase stats query failed", exc_info=True)
+        recent_runs = []
+        alerts = []
+        total_found = 0
+
+    result["recent_runs"] = recent_runs
+    result["alerts"] = alerts
+    result["total_found"] = total_found
+    return result
+
 
 
 @admin_emby_router.put("/scrape/chase-new")

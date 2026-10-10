@@ -198,11 +198,11 @@ def test_check_once_skips_excluded_libraries(db, tmp_path):
             pass
 
     with mock.patch.object(cw, "SessionLocal", lambda: _SessionShim()), \
-            mock.patch.object(cw, "_find_new_videos",
-                              lambda paths, since: ["/fake/new.mkv"]), \
+            mock.patch.object(cw, "_find_new_videos_local",
+                              lambda db_, lib_id, base, since: (["/fake/new.mkv"], 1)), \
             mock.patch.object(cw, "_library_mount_sources", lambda lib, _db: []), \
-            mock.patch.object(cw.scan_queue, "enqueue",
-                              lambda lib, **kw: enqueued.append(lib.id)):
+            mock.patch.object(cw.scan_queue, "enqueue_targeted",
+                              lambda lib, prefixes, **kw: enqueued.append(lib.id)):
         cw._check_once()
 
     assert enqueued == [watched.id]
