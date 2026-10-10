@@ -221,6 +221,23 @@ def _peer_trusted(peer: str) -> bool:
     return _is_trusted_proxy(peer)
 
 
+def _peer_is_cloudflare(peer: str) -> bool:
+    """对端是否在 Cloudflare 官方网段内。
+
+    P2 修复（审查）：CF-Connecting-IP 只能采信 CF 官方网段发来的。
+    此前 _peer_trusted 把回环/自配代理也算可信，攻击者经本机 nginx 伪造
+    CF-Connecting-IP 即可任意冒充客户端 IP（限流绕过、审计投毒）。
+    """
+    try:
+        addr = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    for net in _cloudflare_networks():
+        if addr.version == net.version and addr in net:
+            return True
+    return False
+
+
 def _spoofable_target(ip: str) -> bool:
     """还原出来的「真实 IP」是回环 / 未指定地址：不可能是真实公网用户，拒绝"""
     try:
@@ -246,12 +263,15 @@ class CloudflareIPMiddleware:
                 return
             headers = {k.lower(): v for k, v in (scope.get("headers") or [])}
             real_ip = ""
-            cf_ip = headers.get(b"cf-connecting-ip")
-            if cf_ip:
-                try:
-                    real_ip = cf_ip.decode("latin-1").strip()
-                except Exception:
-                    real_ip = ""
+            # P2 修复：CF-Connecting-IP 仅在对端 ∈ CF 官方网段时采信；
+            # 回环/自配代理来的走 X-Forwarded-For 末段（防伪造）。
+            if _peer_is_cloudflare(str(peer or "")):
+                cf_ip = headers.get(b"cf-connecting-ip")
+                if cf_ip:
+                    try:
+                        real_ip = cf_ip.decode("latin-1").strip()
+                    except Exception:
+                        real_ip = ""
             if not real_ip:
                 xff = headers.get(b"x-forwarded-for")
                 if xff:

@@ -113,6 +113,10 @@ def _create_token(data: dict, expires_delta: timedelta, token_type: str) -> str:
 def create_access_token(user_id: int, extra: Optional[dict[str, Any]] = None) -> str:
     payload = {"sub": str(user_id)}
     if extra:
+        # P3 修复（审查）：extra 在 sub 之后 update 可覆盖 sub，是 footgun。
+        # 先剔除保留键，再强制写 sub。
+        for reserved in ("sub", "exp", "type", "jti"):
+            extra.pop(reserved, None)
         payload.update(extra)
     return _create_token(payload, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES), "access")
 
