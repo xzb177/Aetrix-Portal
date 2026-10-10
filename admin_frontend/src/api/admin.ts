@@ -1660,6 +1660,20 @@ export const browseLocalDirs = (path = '/') =>
 export const fetchMountRcloneRemotes = () =>
   get<{ remotes: string[]; total: number }>(`${E}/mounts/rclone/conf`)
 
+/** .strm 直链目录配置（后端 GET/PUT /api/admin/emby/mounts/strm） */
+export interface StrmConfig {
+  enabled: boolean
+  host_dir: string
+  container_path: string
+  defaults: { enabled: boolean; host_dir: string; container_path: string }
+}
+/** 当前 .strm 直链目录配置（总开关 / 宿主机目录 / 容器内挂载点） */
+export const fetchStrmConfig = () =>
+  get<{ success: boolean; strm: StrmConfig }>(`${E}/mounts/strm`)
+/** 写回 .strm 直链目录配置；路径非法时后端 400，拦截器会弹出 detail */
+export const saveStrmConfig = (data: { enabled: boolean; host_dir: string; container_path: string }) =>
+  put<{ success: boolean; strm: StrmConfig }>(`${E}/mounts/strm`, data)
+
 // ==================== 每台 EA 一份 rclone.conf ====================
 
 /** 读这台 EA 的 rclone.conf：**只返 remote 名，不返明文**（含 token） */

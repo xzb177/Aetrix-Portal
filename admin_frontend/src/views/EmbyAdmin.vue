@@ -21,7 +21,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
 import {
   Delete, Film, FolderPlus, HardDrive, History, ImagePlus, RefreshCcw, RefreshCw, ScanSearch,
-  CalendarClock, Info, ListChecks, Search, Server, ShieldAlert,
+  CalendarClock, Info, Link, ListChecks, Search, Server, ShieldAlert,
   Settings2, Square, Wand2, X,
 } from 'lucide-vue-next'
 import { EmptyState, PageHeader, SectionCard } from '@/components/ui'
@@ -41,6 +41,7 @@ import {
   fetchServers,
   fetchAutoScan,
   fetchChaseNew,
+  fetchStrmConfig,
   fetchTmdbKeys,
   fetchTmdbLanguage,
   generateVirtualLibraries,
@@ -54,12 +55,13 @@ import {
   scanLibrary,
   saveAutoScan,
   saveChaseNew,
+  saveStrmConfig,
   saveTmdbLanguage,
   stopAllTranscodes,
   updateLibrary,
   uploadLibraryCover,
 } from '@/api/admin'
-import type { AutoScanConfig, ChaseNewConfig, TmdbKeysStatus, TmdbLanguageStatus } from '@/api/admin'
+import type { AutoScanConfig, ChaseNewConfig, StrmConfig, TmdbKeysStatus, TmdbLanguageStatus } from '@/api/admin'
 import { TMDB_LANGUAGE_LABELS } from '@/api/admin'
 import type {
   EmbyLibrary,
@@ -695,6 +697,7 @@ async function load() {
       loadTmdbStatus().catch(() => undefined),
       loadAutoScanConfig(),
       loadChaseNewConfig().catch(() => undefined),
+      loadStrmConfig().catch(() => undefined),
       loadTmdbLanguageConfig().catch(() => undefined),
     ])
     // mount_ids 兼容旧响应（老后端没有这个字段）
@@ -918,6 +921,40 @@ async function saveAutoScanAction() {
     ElMessage.error(e?.response?.data?.detail || '保存失败')
   } finally {
     autoScanSaving.value = false
+  }
+}
+
+// ==================== .strm 直链目录配置 ====================
+// .strm 是内容为播放直链的纯文本小文件；宿主机目录经 docker-compose 挂进容器。
+// 三个配置项全部由管理员决定（默认启用=/opt/strm→/strm，与现状一致）；关闭总开关后
+// 扫描不再收录 .strm 文件（已入库条目不动），保存即热生效、无需重启。
+const strmConfig = ref<StrmConfig | null>(null)
+const strmConfigSaving = ref(false)
+
+async function loadStrmConfig() {
+  try {
+    const res = await fetchStrmConfig()
+    strmConfig.value = { ...res.strm }
+  } catch {
+    strmConfig.value = null // 出错不挡页面其它内容
+  }
+}
+
+async function saveStrmConfigAction() {
+  if (!strmConfig.value) return
+  strmConfigSaving.value = true
+  try {
+    const res = await saveStrmConfig({
+      enabled: strmConfig.value.enabled,
+      host_dir: strmConfig.value.host_dir,
+      container_path: strmConfig.value.container_path,
+    })
+    strmConfig.value = { ...res.strm }
+    ElMessage.success(`.strm 直链已${res.strm.enabled ? '开启' : '关闭'}`)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '保存失败')
+  } finally {
+    strmConfigSaving.value = false
   }
 }
 
@@ -1818,6 +1855,34 @@ function typeLabel(t: string): string {
                 环境变量 TMDB_LANGUAGE 覆盖了这里的设置（改这里不会生效）
               </div>
             </div>
+          </div>
+        </SectionCard>
+        <SectionCard class="strm-card" title=".strm 直链" :icon="Link">
+          <template #actions>
+            <div class="queue-facts">
+              <span class="fact" :class="{ warn: strmConfig && !strmConfig.enabled }">
+                {{ strmConfig ? (strmConfig.enabled ? '已启用' : '已关闭') : '读取中…' }}
+              </span>
+            </div>
+          </template>
+          <p class="drawer-hint">
+            .strm 是内容为播放直链的纯文本小文件。宿主机目录经 docker-compose（STRM_MOUNT_DIR，默认 /opt/strm）挂到容器内挂载点（默认 /strm，只读）；改这里只改"认哪个目录"，不动容器挂载本身。关闭总开关后扫描不再收录 .strm 文件（已入库的不动），保存即生效。
+          </p>
+          <div v-if="strmConfig" class="scrape-actions">
+            <el-switch v-model="strmConfig.enabled" active-text="开启" inactive-text="关闭" />
+            <el-input v-model="strmConfig.host_dir" placeholder="/opt/strm" style="width: 210px" aria-label="宿主机 .strm 目录">
+              <template #prepend>宿主机</template>
+            </el-input>
+            <el-input v-model="strmConfig.container_path" placeholder="/strm" style="width: 180px" aria-label="容器内挂载点">
+              <template #prepend>容器内</template>
+            </el-input>
+            <el-button type="primary" size="small" :loading="strmConfigSaving" @click="saveStrmConfigAction">
+              保存
+            </el-button>
+          </div>
+          <div v-else class="au-skeleton scrape-skeleton" aria-busy="true" />
+          <div v-if="strmConfig" class="drawer-hint drawer-hint--after">
+            当前容器内挂载点：{{ strmConfig.container_path }} ｜ 建媒体库时把路径指向它（添加路径弹窗里有快捷入口）
           </div>
         </SectionCard>
       </el-tab-pane>
