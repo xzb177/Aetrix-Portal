@@ -255,3 +255,44 @@ def test_check_once_ignores_strm_when_disabled(db, tmp_path):
         cw._check_once()
 
     assert enqueued == []
+
+
+# ==================== 基线回归：首轮失败不触发扫描风暴 ====================
+
+def test_failed_first_check_does_not_cause_scan_storm(db, tmp_path, monkeypatch):
+    """首轮检查失败（state 行已建但 last_ok_at 为空），次轮成功时必须建基线
+    而不是把全库当新增上报。
+
+    回归：baseline_if_empty 只看「state 行是否存在」时，首轮失败会在次轮
+    触发全库扫描风暴（_touch_source_state(ok=False) 也是 get-or-create）。
+    """
+    import time
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    for n in ["a.strm", "b.strm", "c.mkv"]:
+        (lib_dir / n).write_bytes(b"x")
+
+    # 第 1 轮：检查抛异常（模拟 find+scandir 双失败）
+    def boom(*_a, **_k):
+        raise RuntimeError("simulated first-run failure")
+    monkeypatch.setattr(cw, "_find_new_videos", boom)
+    try:
+        cw._find_new_videos_local(db, 1, str(lib_dir), time.time() - 3600)
+        raise AssertionError("should have raised")
+    except RuntimeError:
+        pass
+
+    # 失败也建了 state 行，但 last_ok_at 为空
+    state = cw._get_source_state(db, str(lib_dir))
+    assert state is not None
+    assert state.last_ok_at is None
+
+    # 第 2 轮：恢复正常，必须走基线（返回空），不能把 3 个文件全报成新增
+    monkeypatch.undo()
+    paths, _n = cw._find_new_videos_local(db, 1, str(lib_dir), time.time() - 7200)
+    assert paths == [], f"首轮失败后次轮应建基线，实际上报了 {len(paths)} 个文件"
+
+    # 第 3 轮：新增一个文件，必须被上报（基线只建一次）
+    (lib_dir / "d.strm").write_bytes(b"x")
+    paths, _n = cw._find_new_videos_local(db, 1, str(lib_dir), time.time() - 7200)
+    assert len(paths) == 1 and paths[0].endswith("d.strm"), paths
