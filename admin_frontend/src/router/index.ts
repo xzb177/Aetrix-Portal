@@ -30,7 +30,9 @@ const routes: RouteRecordRaw[] = [
       { path: 'subscriptions', name: 'Subscriptions', component: () => import('@/views/Subscriptions.vue'), meta: { title: '订阅与权益' } },
       { path: 'goods', name: 'Goods', component: () => import('@/views/Goods.vue'), meta: { title: '商品管理' } },
       { path: 'orders', name: 'Orders', component: () => import('@/views/Orders.vue'), meta: { title: '运营·订单' } },
-      { path: 'exchange-codes', redirect: 'codes' },
+      // 卡码 / 兑换码已并入「码管理」（Codes.vue 两个标签页）：旧地址跳到对应标签，收藏不会落到仪表盘
+      { path: 'exchange-codes', redirect: { path: '/codes', query: { tab: 'exchange' } } },
+      { path: 'registration-codes', redirect: { path: '/codes', query: { tab: 'reg' } } },
       // 优惠券（v2.10.0）：与兑换码分工不同——兑换码不花钱拿东西，优惠券是付费时抵扣
       { path: 'coupons', name: 'Coupons', component: () => import('@/views/Coupons.vue'), meta: { title: '运营·优惠券' } },
       { path: 'invitations', name: 'Invitations', component: () => import('@/views/Invitations.vue'), meta: { title: '运营·邀请与积分' } },
@@ -47,6 +49,10 @@ const routes: RouteRecordRaw[] = [
       // 公益服：抽奖配置 / 积分配置（v2.55 公益用户页已并入用户管理，求片审核页已合并）
       // 求片审核已并入「求片管理」（MediaSeek.vue），路由移除
       { path: 'welfare-lottery-rounds', name: 'WelfareLotteryRounds', component: () => import('@/views/WelfareLotteryRounds.vue'), meta: { title: '公益服·群抽奖' } },
+      // 旧抽奖页（WelfareLottery.vue）/ 公益用户 / 求片审核已删除或合并：旧地址跳到新页
+      { path: 'welfare-lottery', redirect: '/welfare-lottery-rounds' },
+      { path: 'welfare-users', redirect: '/users' },
+      { path: 'welfare-requests', redirect: '/media-seek' },
       { path: 'welfare-points', name: 'WelfarePoints', component: () => import('@/views/WelfarePoints.vue'), meta: { title: '公益服·积分配置' } },
       // 会员等级（P1 统一货币体系）：运营中心 → 会员等级
       { path: 'member-levels', name: 'MemberLevels', component: () => import('@/views/MemberLevels.vue'), meta: { title: '会员等级' } },
@@ -81,6 +87,28 @@ const routes: RouteRecordRaw[] = [
 const router = createRouter({
   history: createWebHistory('/admin/'),
   routes,
+  // 换页回到顶部（浏览器前进 / 后退仍回到原来的滚动位置）；同页只改 query（筛选深链）不跳
+  scrollBehavior(to, from, savedPosition) {
+    if (savedPosition) return savedPosition
+    if (to.path === from.path) return false
+    return { top: 0 }
+  },
+})
+
+/**
+ * 懒加载分块失效兜底：页面全部按路由懒加载，发版后旧标签页里的 chunk 文件名已经不存在，
+ * 点侧边栏会抛「Failed to fetch dynamically imported module」，表现是「点了没反应」。
+ * 遇到这类错误整页跳到目标地址拿新的入口；sessionStorage 节流，避免文件真缺失时无限刷新。
+ */
+const CHUNK_RELOAD_KEY = 'admin_chunk_reload_at'
+router.onError((err, to) => {
+  const msg = err instanceof Error ? err.message : String(err)
+  const isChunkError = /dynamically imported module|Importing a module script failed|Loading chunk .* failed/i.test(msg)
+  if (!isChunkError) return
+  const last = Number(sessionStorage.getItem(CHUNK_RELOAD_KEY) || 0)
+  if (Date.now() - last < 10000) return
+  sessionStorage.setItem(CHUNK_RELOAD_KEY, String(Date.now()))
+  window.location.assign(router.resolve(to.fullPath).href)
 })
 
 // 首次运行向导状态（setup_completed）：一次页面加载只问后端一次。

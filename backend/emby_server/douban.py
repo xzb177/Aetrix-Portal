@@ -209,9 +209,85 @@ class DoubanClient:
                 "year": str(data.get("datePublished") or "")[:4] or None,
                 "image": str(data.get("image") or ""),
                 "genres": data.get("genre") or [],
+                "runtime_ticks": parse_iso_duration(data.get("duration")),
             }
         logger.debug("[douban] subject %s 无 JSON-LD", douban_id)
         return None
+
+
+    def get_celebrities(self, douban_id: str) -> list[dict]:
+        """按豆瓣 ID 取演职员表：``[{name, image, role}]``（只取演员）。
+
+        解析 ``/subject/{id}/celebrities`` 页面：头像在 ``background-image``，
+        角色在 ``span.role`` 的「演员 Actor (饰 展望)」里。默认占位头像不算头像。
+        失败返回 []（演员头像是增强信息，不能影响主流程）。
+        """
+        if not douban_id:
+            return []
+        url = "https://movie.douban.com/subject/{}/celebrities".format(
+            urllib.parse.quote(str(douban_id)))
+        html = self._get(url)
+        if not html:
+            return []
+        return parse_celebrities(html)
+
+
+_ISO_DUR_RE = re.compile(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$", re.IGNORECASE)
+
+
+def parse_iso_duration(value: Any) -> int:
+    """JSON-LD 的 ISO 8601 时长（``PT1H58M``）→ 100ns ticks；解析不了返回 0。"""
+    m = _ISO_DUR_RE.match(str(value or "").strip())
+    if not m or not any(m.groups()):
+        return 0
+    h, mi, se = (int(g or 0) for g in m.groups())
+    secs = h * 3600 + mi * 60 + se
+    return secs * 10_000_000 if 0 < secs < 86400 else 0
+
+
+_CELEB_BLOCK_RE = re.compile(r'<li[^>]*class="celebrity"[^>]*>(.*?)</li>',
+                             re.DOTALL | re.IGNORECASE)
+_CELEB_NAME_RE = re.compile(r'class="name"[^>]*>\s*(?:<a[^>]*>)?([^<]+)<', re.IGNORECASE)
+_CELEB_TITLE_RE = re.compile(r'<a[^>]*title="([^"]+)"', re.IGNORECASE)
+_CELEB_AVATAR_RE = re.compile(r'background-image:\s*url\(([^)]+)\)', re.IGNORECASE)
+_CELEB_ROLE_RE = re.compile(r'class="role"[^>]*>([^<]*)<', re.IGNORECASE)
+_PLAYS_RE = re.compile(r'饰\s*([^)）/]+)')
+
+
+def parse_celebrities(html: str) -> list[dict]:
+    """解析豆瓣演职员页（纯函数，便于测试）。只返回演员行。"""
+    out: list[dict] = []
+    for m in _CELEB_BLOCK_RE.finditer(html or ""):
+        block = m.group(1)
+        role_m = _CELEB_ROLE_RE.search(block)
+        role_text = (role_m.group(1) if role_m else "").strip()
+        if role_text and not (role_text.startswith("演员") or "Actor" in role_text
+                              or "Actress" in role_text):
+            continue  # 导演/编剧等
+        nm = _CELEB_NAME_RE.search(block) or _CELEB_TITLE_RE.search(block)
+        name = (nm.group(1) if nm else "").strip()
+        if not name:
+            continue
+        av = _CELEB_AVATAR_RE.search(block)
+        image = (av.group(1) if av else "").strip().strip("'\"")
+        if not image.startswith(("http://", "https://")) or "default" in image:
+            image = ""
+        plays = _PLAYS_RE.search(role_text)
+        out.append({"name": name, "image": image,
+                    "role": plays.group(1).strip() if plays else ""})
+    return out
+
+
+def name_matches(local: str, douban_name: str) -> bool:
+    """库里的演员名（如「嘉羿」）与豆瓣名（「嘉羿 Jia Yi」）是不是同一个人。"""
+    a = (local or "").strip()
+    b = (douban_name or "").strip()
+    if not a or not b:
+        return False
+    if a == b or b.startswith(a + " "):
+        return True
+    # 库里是英文名、豆瓣是「中文名 英文名」
+    return bool(not has_cjk(a)) and b.lower().endswith(" " + a.lower())
 
 
 client = DoubanClient()

@@ -251,8 +251,8 @@ def test_people_dto_format(db):
     db.commit()
     got = emby_api._people_dto(item, db, {})
     assert got == [
-        {"Name": "李四", "Role": "配角", "Type": "Actor"},
-        {"Name": "张三", "Role": "主角", "Type": "Actor",
+        {"Name": "李四", "Id": mock.ANY, "Role": "配角", "Type": "Actor"},
+        {"Name": "张三", "Id": mock.ANY, "Role": "主角", "Type": "Actor",
          "PrimaryImageTag": mock.ANY},
     ]
     # 有头像才给 PrimaryImageTag（客户端只对有标记的发图片请求）
@@ -277,7 +277,7 @@ def test_people_dto_uses_prefetch(db):
     with mock.patch.object(db, "query", side_effect=AssertionError("N+1")):
         got = emby_api._people_dto(item, db, prefetch)
         got_naked = emby_api._people_dto(naked, db, prefetch)
-    assert got == [{"Name": "王五", "Role": "", "Type": "Actor"}]
+    assert got == [{"Name": "王五", "Id": mock.ANY, "Role": "", "Type": "Actor"}]
     assert got_naked == []
 
 

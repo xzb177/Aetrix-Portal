@@ -2,7 +2,7 @@
 /**
  * 兑换码管理：批量生成（积分/订阅/折扣型）、停用/启用、使用审计
  */
-import { onMounted, ref, computed } from 'vue'
+import { onMounted, onUnmounted, ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Gift, Plus, RefreshCw, Search, CheckCircle2, Ticket } from 'lucide-vue-next'
 import { PageHeader, SectionCard, StatTile } from '@/components/ui'
@@ -70,6 +70,11 @@ async function load() {
 }
 
 async function handleGenerate() {
+  if (genLoading.value) return
+  if (genForm.value.type === 'subscription' && !genForm.value.plan_id) {
+    ElMessage.warning('订阅型兑换码要先选择套餐')
+    return
+  }
   genLoading.value = true
   try {
     const res = await createExchangeCodes({
@@ -88,20 +93,25 @@ async function handleGenerate() {
     genVisible.value = false
     ElMessage.success(`成功生成 ${genResult.value.length} 个兑换码`)
     load()
-  } catch (e: unknown) {
-    ElMessage.error((e as Error)?.message || '生成失败')
+  } catch {
+    /* 写操作失败由请求拦截器统一弹错，这里不再重复提示 */
   } finally {
     genLoading.value = false
   }
 }
 
+const toggleBusyId = ref<number | null>(null)
 async function toggleCode(row: ExchangeCodeRow) {
+  if (toggleBusyId.value === row.id) return
+  toggleBusyId.value = row.id
   try {
     await updateExchangeCode(row.id, !row.is_active)
     row.is_active = !row.is_active
     ElMessage.success(row.is_active ? '已启用' : '已停用')
-  } catch (e: unknown) {
-    ElMessage.error((e as Error)?.message || '操作失败')
+  } catch {
+    /* 写操作失败由请求拦截器统一弹错 */
+  } finally {
+    toggleBusyId.value = null
   }
 }
 
@@ -112,9 +122,14 @@ const rewardText = (row: ExchangeCodeRow) =>
       ? `${row.plan_name || '套餐'} × ${row.duration_days} 天`
       : `${row.discount_pct} 折`
 
-function copyAll() {
-  navigator.clipboard.writeText(genResult.value.join('\n'))
-  ElMessage.success('已复制全部')
+/** 剪贴板只在安全上下文（https / localhost）可用：http 部署下 writeText 会直接 reject */
+async function copyAll() {
+  try {
+    await navigator.clipboard.writeText(genResult.value.join('\n'))
+    ElMessage.success('已复制全部')
+  } catch {
+    ElMessage.warning('浏览器不允许写入剪贴板，请在文本框里全选后手动复制')
+  }
 }
 
 function usedNames(row: ExchangeCodeRow): string {
@@ -129,12 +144,22 @@ const activeCount = computed(() => codes.value.filter((c) => c.is_active).length
 
 // 前端筛选（后端一次给最近 200 条）
 const keyword = ref('')
+/** 实际参与筛选的关键字：输入停 250ms 再过滤，连续打字时不逐键重算整张表 */
+const appliedKeyword = ref('')
+let keywordTimer: ReturnType<typeof setTimeout> | undefined
+watch(keyword, (kw) => {
+  clearTimeout(keywordTimer)
+  // 清空是立即的：点 × 或「清空筛选」不用等
+  if (!kw.trim()) appliedKeyword.value = ''
+  else keywordTimer = setTimeout(() => { appliedKeyword.value = kw }, 250)
+})
+onUnmounted(() => clearTimeout(keywordTimer))
 const typeFilter = ref<'' | 'points' | 'subscription' | 'discount'>('')
 const statusFilter = ref<'' | 'active' | 'inactive'>('')
 const hasFilter = computed(() => Boolean(keyword.value.trim() || typeFilter.value || statusFilter.value))
 
 const visibleCodes = computed(() => {
-  const kw = keyword.value.trim().toLowerCase()
+  const kw = appliedKeyword.value.trim().toLowerCase()
   return codes.value.filter((c) => {
     if (typeFilter.value && c.type !== typeFilter.value) return false
     if (statusFilter.value === 'active' && !c.is_active) return false
@@ -171,7 +196,6 @@ onMounted(load)
     </PageHeader>
 
     <el-alert
-      class="mb-4"
       type="info"
       :closable="false"
       show-icon
@@ -221,7 +245,7 @@ onMounted(load)
         </template>
 
         <template #cell-type="{ row }">
-          <span class="au-badge" :class="row.type === 'points' ? 'au-badge-green' : row.type === 'subscription' ? 'au-badge-amber' : 'au-badge-blue'">
+          <span class="au-badge" :class="row.type === 'points' ? 'au-badge-green' : row.type === 'subscription' ? 'au-badge-amber' : 'au-badge-info'">
             {{ row.type === 'points' ? '积分' : row.type === 'subscription' ? '订阅' : '折扣' }}
           </span>
         </template>
@@ -249,7 +273,7 @@ onMounted(load)
         </template>
 
         <template #cell-actions="{ row }">
-          <el-button size="small" :type="row.is_active ? 'warning' : 'success'" @click="toggleCode(row)">
+          <el-button size="small" :type="row.is_active ? 'warning' : 'success'" :loading="toggleBusyId === row.id" @click="toggleCode(row)">
             {{ row.is_active ? '停用' : '启用' }}
           </el-button>
         </template>
@@ -257,7 +281,7 @@ onMounted(load)
     </SectionCard>
 
     <!-- 生成对话框 -->
-    <el-dialog v-model="genVisible" title="批量生成兑换码" width="480px">
+    <el-dialog v-model="genVisible" title="批量生成兑换码" width="min(480px, 92vw)">
       <el-form label-position="top">
         <el-form-item label="类型">
           <el-radio-group v-model="genForm.type">
@@ -277,6 +301,9 @@ onMounted(load)
           <el-form-item label="套餐">
             <el-select v-model="genForm.plan_id" placeholder="选择订阅套餐" style="width: 100%">
               <el-option v-for="p in plans" :key="p.id" :label="p.name" :value="p.id" />
+              <template #empty>
+                <div class="select-empty">还没有订阅套餐，先去「商品与套餐」建一个</div>
+              </template>
             </el-select>
           </el-form-item>
           <el-form-item label="时长（天）">
@@ -303,7 +330,7 @@ onMounted(load)
     </el-dialog>
 
     <!-- 生成结果 -->
-    <el-dialog v-model="resultVisible" title="生成结果（请保存）" width="420px">
+    <el-dialog v-model="resultVisible" title="生成结果（请保存）" width="min(420px, 92vw)">
       <el-input
         :model-value="genResult.join('\n')"
         type="textarea"
@@ -339,6 +366,7 @@ onMounted(load)
 
 .code { letter-spacing: 0.06em; font-weight: 600; color: var(--au-text); }
 .muted { color: var(--au-text-3); font-size: 12px; }
+.select-empty { padding: 10px 12px; color: var(--au-text-3); font-size: 12px; }
 
 @media (max-width: 768px) {
   .list-bar { padding: 4px 16px 12px; }

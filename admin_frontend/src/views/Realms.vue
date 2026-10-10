@@ -219,7 +219,15 @@ async function confirmDelete() {
     return ElMessage.warning('这个服还有数据，请先选一个「数据移交给」的服')
   }
   if (!hasData.value) {
-    await ElMessageBox.confirm(`确认删除「${row.name}」？`, '删除服', { type: 'warning' })
+    try {
+      await ElMessageBox.confirm(`确认删除「${row.name}」？`, '删除服', {
+        type: 'warning',
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+      })
+    } catch {
+      return
+    }
   }
   deleting.value = true
   try {
@@ -423,7 +431,7 @@ function shortDate(s: string | null): string {
     </div>
 
     <!-- 新建 / 编辑 -->
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑服' : '新建服'" width="520px">
+    <el-dialog v-model="dialogVisible" :title="editing ? '编辑服' : '新建服'" width="min(520px, 92vw)">
       <el-form label-position="top">
         <el-form-item label="名称">
           <el-input v-model="form.name" placeholder="给运营看的名字，例如「主站 · 月付」" />
@@ -481,7 +489,7 @@ function shortDate(s: string | null): string {
     </el-dialog>
 
     <!-- 节点体检结果 -->
-    <el-dialog v-model="syncVisible" :title="`「${syncTarget?.name || ''}」的节点体检结果`" width="680px">
+    <el-dialog v-model="syncVisible" :title="`「${syncTarget?.name || ''}」的节点体检结果`" width="min(680px, 92vw)">
       <p class="sync-lead">
         体检会逐台连接该服的播放节点，核对 <code>NODE_KEY</code>（哪台机器）、
         <code>REALM</code>（属于哪个服）与它负责的媒体库数量。
@@ -508,7 +516,7 @@ function shortDate(s: string | null): string {
     </el-dialog>
 
     <!-- 删服 -->
-    <el-dialog v-model="deleteVisible" title="删除服" width="520px">
+    <el-dialog v-model="deleteVisible" title="删除服" width="min(520px, 92vw)">
       <p class="delete-lead">
         确认删除「{{ deleteTarget?.name }}」？默认服不能删除（历史配置挂在它上面）。
       </p>

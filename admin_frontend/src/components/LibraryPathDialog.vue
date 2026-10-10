@@ -257,7 +257,7 @@ function confirmChecked() {
   <el-dialog
     :model-value="modelValue"
     :title="dialogTitle"
-    width="min(620px, 94vw)"
+    width="min(620px, 92vw)"
     :close-on-click-modal="false"
     @update:model-value="(v: boolean) => emit('update:modelValue', v)"
   >

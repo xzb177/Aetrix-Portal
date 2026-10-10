@@ -315,7 +315,7 @@ function fmtDate(value: string | null): string {
       </div>
     </NoticePanel>
     <!-- 授予管理员（弹窗）：账号需要先在站点注册过 -->
-    <el-dialog v-model="grantVisible" title="授予管理员" width="460px">
+    <el-dialog v-model="grantVisible" title="授予管理员" width="min(460px, 92vw)">
       <el-form label-position="top">
         <el-form-item label="用户名或邮箱">
           <el-input
@@ -346,7 +346,7 @@ function fmtDate(value: string | null): string {
     </el-dialog>
 
     <!-- 管理某个管理员（弹窗）：角色 + 启用状态 + 撤销，护栏也在页面上说清楚 -->
-    <el-dialog v-model="manage.visible" :title="`管理「${manage.row?.username || ''}」`" width="500px">
+    <el-dialog v-model="manage.visible" :title="`管理「${manage.row?.username || ''}」`" width="min(500px, 92vw)">
       <div v-if="manage.row" class="manage-body">
         <div class="kv-list">
           <div class="kv-row"><span class="kv-key">账号</span>

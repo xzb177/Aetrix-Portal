@@ -186,6 +186,13 @@ def item_image(item_id: str, image_type: str, request: Request,
             raise HTTPException(status_code=404, detail="Image not found")
     item = db.query(em.MediaItem).filter(em.MediaItem.guid == item_id).first()
     if not item:
+        if image_type == "Primary" and item_id.isdigit():
+            # 演员头像：People[].Id 是 emby_people 行 id（数字串，与 32 位 guid 不撞），
+            # 客户端按 /Items/{Person.Id}/Images/Primary 取图
+            person = db.query(em.EmbyPerson).filter(
+                em.EmbyPerson.id == int(item_id)).first()
+            if person is not None:
+                return _serve_person_image(person.name, db, ew, eh)
         raise HTTPException(status_code=404, detail="Item not found")
     if image_type not in ("Primary", "Backdrop", "Art", "Thumb", "Logo"):
         raise HTTPException(status_code=404, detail="Image not found")
@@ -253,6 +260,11 @@ def person_image(name: str, request: Request,
     ``isfile``），落不下来就 404，不代理、不抛 5xx。只允许 http(s)（防 SSRF）。
     """
     ew, eh = image_store.pick_dim(maxWidth, w), image_store.pick_dim(maxHeight, h)
+    return _serve_person_image(name, db, ew, eh)
+
+
+def _serve_person_image(name: str, db: Session, ew=None, eh=None):
+    """按演员名取第一条有头像的行并下发（本地化失败 404，不代理、不 5xx）。"""
     person = (
         db.query(em.EmbyPerson)
         .filter(em.EmbyPerson.name == name, em.EmbyPerson.image != "",
