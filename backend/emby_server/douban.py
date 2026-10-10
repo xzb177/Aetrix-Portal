@@ -51,6 +51,38 @@ _SERIES_TYPES = {"tv", "show", "series"}
 
 _lock = threading.Lock()
 
+# 封禁检测：豆瓣封 IP 时返回 403/429，或 200 + 跳 sec.douban.com 的验证码/禁止访问页。
+# 以前这些都被当成「没搜中」→ 中文条目落到 TMDB / metadata_source='none'。
+# 现在抛 DoubanBannedError（瞬态），并进入全局冷却：冷却期内不再发任何豆瓣请求。
+BAN_COOLDOWN_SECONDS = 900
+_BAN_HTTP_CODES = (403, 418, 429)
+_BAN_MARKERS = ("sec.douban.com", "检测到有异常请求", "<title>禁止访问</title>")
+_banned_until: float = 0.0
+
+
+class DoubanBannedError(RuntimeError):
+    """豆瓣封禁/限流（瞬态）：调用方应留待重试，而不是当成没搜中。"""
+
+
+def ban_remaining() -> float:
+    """全局冷却剩余秒数（0 = 未封禁）。"""
+    return max(0.0, _banned_until - time.time())
+
+
+def reset_ban() -> None:
+    global _banned_until
+    with _lock:
+        _banned_until = 0.0
+
+
+def _trip_ban(reason: str) -> None:
+    global _banned_until
+    with _lock:
+        fresh = _banned_until <= time.time()
+        _banned_until = time.time() + BAN_COOLDOWN_SECONDS
+    if fresh:
+        logger.warning("[douban] 疑似被封禁（%s），全局冷却 %ss", reason, BAN_COOLDOWN_SECONDS)
+
 
 class _RateLimiter:
     """线程安全限速器：两次请求之间的最小间隔秒数。"""
@@ -118,14 +150,33 @@ class DoubanClient:
         self._interval = interval
 
     def _get(self, url: str) -> Optional[str]:
+        """GET 一页。封禁/验证码页抛 DoubanBannedError；其它失败返回 None。"""
+        left = ban_remaining()
+        if left > 0:
+            raise DoubanBannedError(f"豆瓣冷却中，剩余 {int(left)}s")
         _limiter.acquire(self._interval)
         req = urllib.request.Request(url, headers={"User-Agent": _UA})
         try:
             with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-                return resp.read().decode("utf-8", "ignore")
+                final_url = ""
+                try:
+                    final_url = resp.geturl() or ""
+                except Exception:  # noqa: BLE001
+                    pass
+                body = resp.read().decode("utf-8", "ignore")
+        except urllib.error.HTTPError as exc:
+            if exc.code in _BAN_HTTP_CODES:
+                _trip_ban(f"HTTP {exc.code}")
+                raise DoubanBannedError(f"HTTP {exc.code}") from exc
+            logger.debug("[douban] 请求失败 %s: %s", url, exc)
+            return None
         except Exception as exc:
             logger.debug("[douban] 请求失败 %s: %s", url, exc)
             return None
+        if "sec.douban.com" in final_url or any(m in body[:4096] for m in _BAN_MARKERS):
+            _trip_ban("验证码/禁止访问页")
+            raise DoubanBannedError("captcha page")
+        return body
 
     def search(self, title: str, year: Optional[int] = None,
                kind: str = "series") -> Optional[dict]:

@@ -440,8 +440,8 @@ class TgLoginRequest(BaseModel):
 
 
 @auth_router.post("/tg-login")
-def tg_login(req: TgLoginRequest, db: Session = Depends(get_db)):
-    """bot 一键免密登录：一次性 token 换本站登录态"""
+def tg_login(request: Request, req: TgLoginRequest, db: Session = Depends(get_db)):
+    """bot 一键免密登录：一次性 token 换本站登录态（与密码登录一样记日志 + 防共享判定）"""
     from backend.tg_bot import login_token as _lt
     payload = _lt.consume_login_token((req.token or "").strip())
     if not payload:
@@ -455,6 +455,18 @@ def tg_login(req: TgLoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="用户不存在或已禁用")
     if user.telegram_id != payload.get("telegram_id"):
         raise HTTPException(status_code=401, detail="身份校验失败")
+    user.last_login_at = datetime.now()
+    db.commit()
+    record_event(
+        db, username=user.username, user_id=user.id, ip=log_ip(request),
+        agent=user_agent(request), success=True, reason="tg_login",
+    )
+    verdict = share_guard.note_activity(db, user, log_ip(request))
+    if verdict and verdict.get("blocked"):
+        raise HTTPException(
+            status_code=403,
+            detail="检测到该账号在短时间内于多个城市登录，已被暂停使用，请联系管理员",
+        )
     return _issue_auth_response(user, db)
 
 

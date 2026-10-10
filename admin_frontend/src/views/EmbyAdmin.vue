@@ -1974,7 +1974,7 @@ function typeLabel(t: string): string {
             </div>
           </template>
           <p class="drawer-hint">
-            .strm 是内容为播放直链的纯文本小文件。宿主机目录经 docker-compose（STRM_MOUNT_DIR，默认 /opt/strm）挂到容器内挂载点（默认 /strm，只读）；改这里只改"认哪个目录"，不动容器挂载本身。关闭总开关后扫描不再收录 .strm 文件（已入库的不动），保存即生效。
+            .strm 是内容为播放直链的纯文本小文件。宿主机目录经 docker-compose（STRM_MOUNT_DIR，默认 /opt/strm）挂到容器内挂载点（STRM_CONTAINER_PATH，默认 /strm，只读）；改这里只改"认哪个目录"，不动容器挂载本身。要换容器内挂载点：先改 .env 的 STRM_CONTAINER_PATH 并 docker compose up -d 重启，再回来保存（容器里不存在的目录会被拒绝）。关闭总开关后扫描不再收录 .strm 文件（已入库的不动），保存即生效。
           </p>
           <div v-if="strmConfig" class="scrape-actions">
             <el-switch v-model="strmConfig.enabled" active-text="开启" inactive-text="关闭" />

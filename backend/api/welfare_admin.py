@@ -301,16 +301,34 @@ def welfare_config_set(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """保存公益配置"""
-    updated = []
+    """保存公益配置（数值/开关键按 config_schema 校验，非法 400；空字符串=未设置，回退默认值）"""
+    from backend import config_schema
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="配置必须是对象")
+    # 先整体校验再写库：任一非法直接 400，不会写入半截
+    normalized: dict[str, Optional[str]] = {}
     for key, value in data.items():
         if key not in WELFARE_CONFIG_KEYS:
             continue
+        spec = config_schema.WELFARE_CONFIG_SCHEMA.get(key)
+        if spec is None:
+            normalized[key] = "" if value is None else str(value)
+            continue
+        style = "digit" if WELFARE_CONFIG_KEYS[key] in ("0", "1") else "word"
+        try:
+            normalized[key] = config_schema.normalize(key, spec, value, bool_style=style)
+        except config_schema.ConfigValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    updated = []
+    for key, value in normalized.items():
         cfg = db.query(models.SystemConfig).filter(models.SystemConfig.key == key).first()
-        if cfg:
-            cfg.value = str(value)
+        if value is None:
+            if cfg:
+                db.delete(cfg)
+        elif cfg:
+            cfg.value = value
         else:
-            db.add(models.SystemConfig(key=key, value=str(value)))
+            db.add(models.SystemConfig(key=key, value=value))
         updated.append(key)
     _audit(db, current_admin.id, "welfare_config_update", "system", None, {"updated": updated})
     db.commit()
@@ -539,7 +557,26 @@ def draw_lottery_round(
     row = db.execute(text("SELECT id, status FROM lottery_rounds WHERE id = :id"), {"id": round_id}).first()
     if row is None:
         raise HTTPException(status_code=404, detail="抽奖活动不存在")
-    if dict(row._mapping).get("status") != "open":
+    status = dict(row._mapping).get("status")
+    if status == "done":
+        # 已开奖但有中奖者未发放（上次发奖中途失败）：只重跑发放。
+        # distribute_round 逐条原子认领，已发放的跳过，不会重复发奖。
+        if round_id not in lottery_module.pending_distribution_round_ids(db):
+            raise HTTPException(status_code=400, detail="该活动已开奖且奖品已全部发放")
+        distribute_result = lottery_module.distribute_round(db, round_id)
+        _audit(db, current_admin.id, "lottery_round_redistribute", "lottery_round", round_id, {"distributed": distribute_result.get("distributed", 0)})
+        db.commit()
+        winners = lottery_module.draw_round(db, round_id)
+        return {
+            "success": True,
+            "redistributed": True,
+            "winners": [
+                {"id": w.id, "entry_id": w.entry_id, "prize_id": w.prize_id, "distributed": bool(w.distributed)}
+                for w in (winners if isinstance(winners, list) else [])
+            ],
+            "distribute": distribute_result,
+        }
+    if status != "open":
         raise HTTPException(status_code=400, detail="只能对进行中的活动开奖")
     # 原子认领（与自动开奖调度 run_due_draws 同一口径）：只看 status 再开奖是读-判-写，
     # 管理员手动开奖与调度/重复点击并发时会两边都开奖、两边都发奖

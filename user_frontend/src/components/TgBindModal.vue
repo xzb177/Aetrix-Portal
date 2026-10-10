@@ -92,6 +92,8 @@ async function onVerify() {
       closeTimer = setTimeout(close, 3000)
     } else {
       verifyError.value = res.message || '验证失败，请确认已给 Bot 发送正确验证码后重试'
+      // 绑定码因全站异常尝试过多被作废：倒计时归零，引导用户重新生成
+      if (res.code_expired) countdown.value = 0
     }
   } catch (e) {
     verifyError.value = errMsg(e)

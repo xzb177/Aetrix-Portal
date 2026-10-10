@@ -74,3 +74,21 @@ def test_checkin_empty_means_unset(db):
     _save(s, admin, {"checkin_base_min": "", "checkin_base_max": ""})
     rules = economy._checkin_rules(s)
     assert rules["base_min"] == rules["base_max"] == rules["base_points"]
+
+
+def test_checkin_penalty_never_reduces_balance(db):
+    # 基础 1 分、100% 触发惩罚 5 分：奖励钳到 0，签到不能倒扣余额
+    s, admin = db
+    for k, v in {"checkin_base_min": "1", "checkin_base_max": "1", "checkin_streak_bonus": "0",
+                 "checkin_penalty_pct": "100", "checkin_penalty_min": "5", "checkin_penalty_max": "5"}.items():
+        s.add(models.SystemConfig(key=k, value=v))
+    u = models.WebUser(username="pen", password_hash="x", is_welfare=True, points=3, vitality=14)
+    s.add(u)
+    s.commit()
+    res = economy._do_checkin_core(s, u)
+    assert res["penalty"] is True
+    assert res["points_awarded"] == 0
+    s.expire_all()
+    assert s.get(models.WebUser, u.id).points == 3
+    rec = s.query(models.CheckinRecord).filter_by(user_id=u.id).one()
+    assert rec.points_awarded == 0

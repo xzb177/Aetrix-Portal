@@ -86,6 +86,35 @@ def _bind_success_text(db, user) -> str:
 # （绑定成功即可用 /start 一键免密登录该网页账号，等同账号接管）
 BIND_ATTEMPTS_MAX = 5
 BIND_ATTEMPTS_WINDOW = 600
+# 单 TG 账号限流挡不住「多个 TG 账号分布式枚举」：每个待验证的网页绑定码累计全站猜错次数，
+# 达到上限即作废（expires_at 置为现在），网页端验证时提示「已失效，请重新生成」，不会静默 DoS。
+BIND_GLOBAL_FAIL_MAX = 20
+
+
+def _record_global_bind_failure(db, now) -> None:
+    """一次猜错：所有待验证的网页绑定码 fail_count+1，超限的直接作废。"""
+    from sqlalchemy import func
+
+    pending = (
+        TgBindCode.user_id.isnot(None),
+        TgBindCode.telegram_id.is_(None),
+        TgBindCode.used_at.is_(None),
+        TgBindCode.expires_at > now,
+    )
+    try:
+        db.query(TgBindCode).filter(*pending).update(
+            {TgBindCode.fail_count: func.coalesce(TgBindCode.fail_count, 0) + 1},
+            synchronize_session=False,
+        )
+        n = db.query(TgBindCode).filter(
+            *pending, TgBindCode.fail_count >= BIND_GLOBAL_FAIL_MAX,
+        ).update({TgBindCode.expires_at: now}, synchronize_session=False)
+        db.commit()
+        if n:
+            logger.warning("tg 绑定码全站猜错次数超限，已作废 %s 个待验证绑定码", n)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.error("记录绑定码猜错次数失败：%s", exc)
 
 
 def verify_bind_code(db, tg_user_id: int, chat_id: int, code: str) -> str | None:
@@ -110,6 +139,7 @@ def verify_bind_code(db, tg_user_id: int, chat_id: int, code: str) -> str | None
         .first()
     )
     if not record:
+        _record_global_bind_failure(db, now)
         return None
     user = db.query(WebUser).filter(WebUser.id == record.user_id).first()
     if not user:

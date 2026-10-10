@@ -1565,7 +1565,7 @@ class TmdbClient:
 
         :param queries: [(name, year, kind), ...] 搜索参数列表
         :param return_transient: 为 True 时返回 (results, transient_indices) 二元组，
-            transient_indices 为触发 TmdbTransientError 的下标 set（对应结果仍记 None）
+            transient_indices 为触发 TmdbTransientError 或意外异常的下标 set（对应结果仍记 None）
         :return: dict，键为输入下标，值为搜索命中 dict 或 None；
             return_transient=True 时返回 (results, transient_indices) 二元组
         """
@@ -1585,7 +1585,11 @@ class TmdbClient:
                 except TmdbTransientError:
                     transient_indices.add(index)
                     results[index] = None
-                except Exception:
+                except Exception as exc:  # noqa: BLE001
+                    # 意外异常不是「搜不到」：当 None 会被终态化为 metadata_source='none'，
+                    # 逐条路径此时异常冒泡会重试——批量路径按瞬态处理，保持一致
+                    logger.warning("TMDB 批量任务意外异常（按瞬态重试）#%s: %s", index, exc)
+                    transient_indices.add(index)
                     results[index] = None
         if return_transient:
             return results, transient_indices
@@ -1602,7 +1606,7 @@ class TmdbClient:
 
         :param ids: [(tmdb_id, kind), ...] 详情参数列表
         :param return_transient: 为 True 时返回 (results, transient_indices) 二元组，
-            transient_indices 为触发 TmdbTransientError 的下标 set（对应结果仍记 None）
+            transient_indices 为触发 TmdbTransientError 或意外异常的下标 set（对应结果仍记 None）
         :return: dict，键为输入下标，值为详情 dict 或 None；
             return_transient=True 时返回 (results, transient_indices) 二元组
         """
@@ -1622,7 +1626,11 @@ class TmdbClient:
                 except TmdbTransientError:
                     transient_indices.add(index)
                     results[index] = None
-                except Exception:
+                except Exception as exc:  # noqa: BLE001
+                    # 意外异常不是「搜不到」：当 None 会被终态化为 metadata_source='none'，
+                    # 逐条路径此时异常冒泡会重试——批量路径按瞬态处理，保持一致
+                    logger.warning("TMDB 批量任务意外异常（按瞬态重试）#%s: %s", index, exc)
+                    transient_indices.add(index)
                     results[index] = None
         if return_transient:
             return results, transient_indices

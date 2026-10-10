@@ -501,17 +501,48 @@ def optimize_query_plans(db: Session) -> bool:
         return False
 
 
-# .strm 签名刷新：节流间隔（秒，默认 3000 = 50 分钟）与上次运行时间记录文件。
-# .strm 内容签名 1 小时过期（见 strm_sign），janitor 每 600 秒跑一轮，这里按
-# "上次运行"节流——50 分钟未到直接返回，不重复扫盘。
+# .strm 签名刷新：节流间隔上限（秒，默认 3000 = 50 分钟）与上次运行时间记录文件。
+# 实际节流 = min(上限, 重签阈值 − tick)，重签阈值 = max(TTL/3, 2×tick)（见
+# strm_sign.refresh_threshold_seconds）：保证任何文件过期前至少被扫到一次，
+# 不再出现"TTL 短于 50 分钟、两次刷新之间全库过期"。
 STRM_REFRESH_INTERVAL_SECONDS = max(600, int(os.getenv("STRM_REFRESH_INTERVAL_SECONDS", "3000") or 3000))
 STRM_REFRESH_LAST_FILE = "/tmp/strm_sig_refresh.last"
 
 
-def strm_sig_refresh_tick() -> dict:
-    """刷新 .strm 文件签名（节流 50 分钟）：只重签 needs_refresh 的文件。
+def _strm_refresh_settings(db=None) -> tuple[str, int]:
+    """(容器内 .strm 根目录, 签名 TTL)：目录走 strm_config.container_path，TTL 走
+    play_sign.strm_sig_ttl_seconds；db 为 None 时自开会话，读失败回落 env/默认。"""
+    from backend.emby_server import play_sign, strm_config
 
-    - legacy（无签名）→ 补签名；ok 但剩余有效期 < 600 秒 → 重签；
+    if db is not None:
+        return strm_config.container_path(db), play_sign.strm_sig_ttl_seconds(db)
+    try:
+        from backend.database import SessionLocal
+
+        own = SessionLocal()
+        try:
+            return strm_config.container_path(own), play_sign.strm_sig_ttl_seconds(own)
+        finally:
+            own.close()
+    except Exception:  # noqa: BLE001 — 读配置失败不能拖死维护
+        logger.debug("strm_sig_refresh: 读取配置失败，回落环境变量/默认值", exc_info=True)
+        return strm_config.env_container_path(), play_sign.STRM_TTL_DEFAULT
+
+
+def strm_refresh_cadence(ttl_seconds: int, tick_seconds: Optional[int] = None) -> tuple[int, int]:
+    """(重签阈值, 扫盘节流间隔)，都由 TTL 与 janitor tick 推导。"""
+    from backend.emby_server.strm_sign import refresh_threshold_seconds
+
+    tick = int(MAINTENANCE_INTERVAL if tick_seconds is None else tick_seconds)
+    threshold = refresh_threshold_seconds(ttl_seconds, tick)
+    interval = max(0, min(STRM_REFRESH_INTERVAL_SECONDS, threshold - tick))
+    return threshold, interval
+
+
+def strm_sig_refresh_tick(db=None) -> dict:
+    """刷新 .strm 文件签名（节流随 TTL 推导，见 strm_refresh_cadence）：只重签 needs_refresh 的文件。
+
+    - legacy（无签名）→ 补签名；ok 但剩余有效期 < max(TTL/3, 2×tick) → 用后台配置的 TTL 重签；
       bad（签名损坏/过期）→ 跳过计数，不删除不重写，等人工处理。
     - 只读前 4KB 判断（签名只在第一行），超 4KB 的文件重签时才读全文，
       其余行（注释/空行）原样保留；写入走 tmp + os.replace 原子替换。
@@ -525,17 +556,20 @@ def strm_sig_refresh_tick() -> dict:
     bad_files = 0
     errors = 0
 
-    # 1) 节流：上次运行时间（读不到/非法视为从未运行）
+    # 1) 配置：.strm 目录走唯一事实源 strm_config.container_path(db)
+    #    （后台配置 > 环境变量 STRM_CONTAINER_PATH > /strm），TTL 走后台配置
+    strm_dir, ttl = _strm_refresh_settings(db)
+    threshold, interval = strm_refresh_cadence(ttl)
+
+    # 2) 节流：上次运行时间（读不到/非法视为从未运行）；留 30 秒余量吸收 tick 抖动
     try:
         with open(STRM_REFRESH_LAST_FILE, "r", encoding="utf-8") as f:
             last = float(f.read().strip())
     except (OSError, ValueError):
         last = 0.0
-    if now - last < STRM_REFRESH_INTERVAL_SECONDS:
+    if interval > 0 and now - last < interval - 30:
         return {"skipped": True, "reason": "interval"}
 
-    # 2) .strm 目录（部署侧环境变量，与 docker 挂载点一致；不读 DB）
-    strm_dir = os.getenv("STRM_CONTAINER_PATH", "/strm")
     if not os.path.isdir(strm_dir):
         logger.info("strm_sig_refresh: .strm 目录不存在，跳过: %s", strm_dir)
         return {"skipped": True, "reason": "no_dir"}
@@ -565,7 +599,7 @@ def strm_sig_refresh_tick() -> dict:
                 if not head.strip():
                     skipped_files += 1
                     continue
-                if not needs_refresh(head):
+                if not needs_refresh(head, threshold_seconds=threshold):
                     skipped_files += 1
                     continue
                 # 首个有效 URL 行（跳过 BOM/注释/空行，与 mounts.strm_url 同语义）
@@ -573,7 +607,7 @@ def strm_sig_refresh_tick() -> dict:
                 if not first_url:
                     skipped_files += 1
                     continue
-                signed = sign_strm_url(first_url)
+                signed = sign_strm_url(first_url, ttl_seconds=ttl)
                 if not signed or signed == first_url:
                     # 极端情况（空串/签名无变化）：不重写，记 bad 备查
                     bad_files += 1
@@ -765,7 +799,7 @@ def janitor_tick() -> dict:
         result["idle_gc_done"] = bool(_idle_gc_if_quiet())
     except Exception as exc:  # noqa: BLE001
         logger.warning("空闲 GC 失败: %s", exc)
-    # .strm 签名刷新（内部按 50 分钟节流；异常隔离，不影响整轮维护）
+    # .strm 签名刷新（内部按 TTL 推导的节奏节流；异常隔离，不影响整轮维护）
     try:
         result["strm_sig_refresh"] = strm_sig_refresh_tick()
     except Exception as exc:  # noqa: BLE001

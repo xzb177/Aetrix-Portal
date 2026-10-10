@@ -112,6 +112,7 @@ class _EnrichItemSnapshot:
     overview: Optional[str] = None
     series_id: Optional[int] = None
     parent_id: Optional[int] = None
+    metadata_locked: bool = False
 
 
 def _snapshot_item(item: Any) -> _EnrichItemSnapshot:
@@ -133,6 +134,7 @@ def _snapshot_item(item: Any) -> _EnrichItemSnapshot:
         tmdb_id=item.tmdb_id,
         repair_requested_at=item.repair_requested_at,
         overview=item.overview,
+        metadata_locked=bool(getattr(item, "metadata_locked", False)),
         series_id=item.series_id,
         parent_id=item.parent_id,
     )
@@ -578,11 +580,13 @@ def _enrich_fetch_pre(item: Any, holder: Optional[dict] = None,
     # 2.5 豆瓣优先（中文标题）：TMDB 对中文剧集/综艺收录偏少，
     # 短中文剧名 Tier1 LCS>=6 永远达不到。中文标题先走豆瓣，
     # 搜中则取详情写库；没搜中则回退到 TMDB。非中文标题直接走 TMDB。
+    # 锁定条目不写任何自动结果（见 _enrich_apply），也就不必去打豆瓣。
     if (kind in ("series", "movie")
+            and not getattr(item, "metadata_locked", False)
             and not (nfo_data and nfo_data.get("tmdb_id"))
             and not getattr(item, "tmdb_id", None)):
+        from backend.emby_server import douban as _dbn
         try:
-            from backend.emby_server import douban as _dbn
             _cfg2 = SessionLocal()
             try:
                 _dbn_on = _dbn.enabled(_cfg2)
@@ -603,6 +607,8 @@ def _enrich_fetch_pre(item: Any, holder: Optional[dict] = None,
                     # 这里顺手取豆瓣演职员表，写库阶段在 TMDB 没给演员时落库。
                     try:
                         _dc = _dbn.client.get_celebrities(_dh["id"])
+                    except _dbn.DoubanBannedError:
+                        raise
                     except Exception as exc:  # noqa: BLE001 — 演员表是增强信息
                         logger.debug("豆瓣演职员表失败 %s: %s", item.name, exc)
                         _dc = []
@@ -611,6 +617,12 @@ def _enrich_fetch_pre(item: Any, holder: Optional[dict] = None,
                     progress.note_stage("enrich_douban_first")
                     logger.info("[douban] 优先命中 %r -> %s",
                                 item.name, _dh.get("title"))
+        except _dbn.DoubanBannedError as exc:
+            # 封禁 ≠ 没搜中：不落 TMDB、不终态化，整条留待冷却后重试（不烧重试次数）
+            result["ok"] = False
+            result["douban_banned"] = True
+            result["error"] = f"douban banned: {exc}"[:200]
+            return result, None
         except Exception as exc:
             logger.debug("豆瓣优先搜索失败 %s: %s", item.name, exc)
 
@@ -1606,6 +1618,26 @@ def _requeue_mount_unavailable(db, item_id: int, mount_id: Optional[int] = None)
         return "skip"
 
 
+def _requeue_douban_banned(db, item_id: int) -> str:
+    """豆瓣封禁冷却中：打回 pending，冷却结束后再补；attempts 不涨。单条短事务。"""
+    try:
+        from backend.emby_server import douban as _dbn
+        wait = max(60, int(_dbn.ban_remaining()) + 5)
+        item = db.query(em.MediaItem).filter(em.MediaItem.id == item_id).first()
+        if item is None:
+            return "skip"
+        item.enrich_status = "pending"
+        item.enrich_claimed_at = None
+        item.enrich_claim_token = None
+        item.enrich_next_retry_at = datetime.now() + timedelta(seconds=wait)
+        db.commit()
+        logger.info("补全延后（豆瓣封禁冷却）id=%s %ss后重试", item_id, wait)
+        return "retry"
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        return "skip"
+
+
 def _inherit_parent_info(db, item: Any) -> Optional[dict]:
     """纯继承（处方 3）的前提：剧已 done 且有图/tmdb_id，本集无待修复标记。
 
@@ -1666,6 +1698,8 @@ def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
         return _mark_failed(db, item_id, attempts, str(exc))
     if not fetched.get("ok"):
         db.rollback()
+        if fetched.get("douban_banned"):
+            return _requeue_douban_banned(db, item_id)
         return _mark_failed(db, item_id, attempts,
                             fetched.get("error") or "fetch failed")
 
@@ -1793,8 +1827,11 @@ def _process_batch(db, batch: list) -> None:
             continue
         if not fetched.get("ok"):
             db.rollback()
-            outcome = _mark_failed(db, item_id, attempts,
-                                  fetched.get("error") or "fetch failed")
+            if fetched.get("douban_banned"):
+                outcome = _requeue_douban_banned(db, item_id)
+            else:
+                outcome = _mark_failed(db, item_id, attempts,
+                                      fetched.get("error") or "fetch failed")
             progress.note_stage(
                 "enrich_item", (time.monotonic() - started) * 1000.0)
             progress.note_completed(outcome)

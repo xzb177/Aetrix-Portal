@@ -1757,4 +1757,4 @@ export const fetchGDriveSaStatus = () =>
 
 /** 手动触发 SA 轮换（Fix 6） */
 export const rotateGDriveSa = () =>
-  post<{ success: boolean; sa_file?: string; mode?: string }>('/gdrive/sa-rotate')
+  post<{ success: boolean; sa_file?: string; mode?: string; needs_remount?: boolean; remount_hint?: string }>('/gdrive/sa-rotate')

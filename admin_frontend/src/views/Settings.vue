@@ -539,14 +539,16 @@ onMounted(async () => {
 })
 
 /** ==================== 防盗链卡片（独立 endpoint，非通用分组） ==================== */
-/** 用独立接口而非 GROUPS 通用分组：TTL 需要前后端双重范围校验（60~86400 / 300~86400），
+/** 用独立接口而非 GROUPS 通用分组：TTL 需要前后端双重范围校验（60~86400 / 2×维护间隔~86400），
  * 通用分组的 int 字段只有 min=0 的粗校验，装不下。 */
 const hotlink = reactive({ enabled: true, play_sign_ttl: 900, strm_sig_ttl: 3600 })
 const hotlinkOriginal = reactive({ enabled: true, play_sign_ttl: 900, strm_sig_ttl: 3600 })
+const strmTtlMin = ref(1200)
 const hotlinkLoading = ref(false)
 const hotlinkSaving = ref(false)
 
-function applyHotlink(data: { enabled: boolean; play_sign_ttl: number; strm_sig_ttl: number }) {
+function applyHotlink(data: { enabled: boolean; play_sign_ttl: number; strm_sig_ttl: number; strm_sig_ttl_min?: number }) {
+  if (data.strm_sig_ttl_min) strmTtlMin.value = Number(data.strm_sig_ttl_min) || 1200
   hotlink.enabled = !!data.enabled
   hotlink.play_sign_ttl = Number(data.play_sign_ttl) || 900
   hotlink.strm_sig_ttl = Number(data.strm_sig_ttl) || 3600
@@ -576,8 +578,8 @@ async function saveHotlink() {
     ElMessage.error('播放签名有效期需在 60~86400 秒之间')
     return
   }
-  if (!Number.isInteger(hotlink.strm_sig_ttl) || hotlink.strm_sig_ttl < 300 || hotlink.strm_sig_ttl > 86400) {
-    ElMessage.error('.strm 签名有效期需在 300~86400 秒之间')
+  if (!Number.isInteger(hotlink.strm_sig_ttl) || hotlink.strm_sig_ttl < strmTtlMin.value || hotlink.strm_sig_ttl > 86400) {
+    ElMessage.error(`.strm 签名有效期需在 ${strmTtlMin.value}~86400 秒之间`)
     return
   }
   const payload: HotlinkConfigPayload = {
@@ -1075,7 +1077,7 @@ watch(
                   <div class="field-control">
                     <el-input-number
                       v-model="hotlink.strm_sig_ttl"
-                      :min="300"
+                      :min="strmTtlMin"
                       :max="86400"
                       :step="60"
                       controls-position="right"
@@ -1083,7 +1085,7 @@ watch(
                     />
                     <span class="field-suffix">秒</span>
                   </div>
-                  <span class="field-hint">.strm 内容签名有效期，默认 3600（1 小时），范围 300~86400；定时任务每 50 分钟自动刷新</span>
+                  <span class="field-hint">.strm 内容签名有效期，默认 3600（1 小时），范围 {{ strmTtlMin }}~86400；后台按有效期自动推算刷新节奏（剩余不足 1/3 即重签）</span>
                 </div>
               </el-form-item>
             </el-form>

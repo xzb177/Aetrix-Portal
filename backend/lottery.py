@@ -12,7 +12,7 @@ import hashlib
 import secrets
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
@@ -619,7 +619,60 @@ def run_due_draws(db: Session) -> dict:
                 logger.exception("群抽奖自动开奖状态回滚失败 round_id=%s", round_id)
             summary["errors"].append({"round_id": round_id, "error": str(exc)})
             logger.exception("群抽奖自动开奖失败 round_id=%s", round_id)
+    retry_pending_distributions(db, summary)
     return summary
+
+
+# done 轮次补发窗口：开奖后多久内仍自动重试未发放的中奖记录。
+# 永久性错误（奖品配置坏、用户被删）不会无限每分钟重试下去。
+_REDISTRIBUTE_WINDOW = timedelta(days=7)
+
+
+def pending_distribution_round_ids(db: Session, since: datetime | None = None) -> list[int]:
+    """已开奖(done)但仍有 distributed=False 中奖记录的轮次 id。"""
+    q = (
+        db.query(models.LotteryRound.id)
+        .join(models.LotteryRoundWinner, models.LotteryRoundWinner.round_id == models.LotteryRound.id)
+        .filter(
+            models.LotteryRound.status == "done",
+            models.LotteryRoundWinner.distributed.is_(False),
+        )
+    )
+    if since is not None:
+        q = q.filter(
+            (models.LotteryRound.drawn_at.is_(None)) | (models.LotteryRound.drawn_at >= since)
+        )
+    return sorted({row.id for row in q.distinct().all()})
+
+
+def retry_pending_distributions(db: Session, summary: dict | None = None) -> list[int]:
+    """补发：开奖后 distribute_round 中途失败（异常或单个发奖失败）时，轮次已是 done，
+    run_due_draws 的"打回 open"匹配不到任何行，未发放的中奖者永远拿不到奖。
+    这里按轮次重跑 distribute_round；原子认领（distributed=False → True）保证不会重复发奖。
+    """
+    retried: list[int] = []
+    try:
+        round_ids = pending_distribution_round_ids(db, since=datetime.now() - _REDISTRIBUTE_WINDOW)
+    except Exception:
+        db.rollback()
+        logger.exception("群抽奖补发扫描失败")
+        return retried
+    for round_id in round_ids:
+        try:
+            res = distribute_round(db, round_id)
+            retried.append(round_id)
+            if res.get("distributed"):
+                logger.info("群抽奖补发完成 round_id=%s distributed=%s", round_id, res.get("distributed"))
+            if summary is not None and res.get("errors"):
+                summary["errors"].append({"round_id": round_id, "error": "补发部分失败", "detail": res["errors"]})
+        except Exception as exc:
+            db.rollback()
+            logger.exception("群抽奖补发失败 round_id=%s", round_id)
+            if summary is not None:
+                summary["errors"].append({"round_id": round_id, "error": str(exc)})
+    if summary is not None:
+        summary["redistributed"] = retried
+    return retried
 
 
 def start_lottery_auto_draw_scheduler() -> bool:

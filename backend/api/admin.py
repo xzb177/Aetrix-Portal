@@ -579,7 +579,20 @@ def gdrive_sa_rotate(
     result = playback_tune.ensure_sa_rotation("/root/.config/rclone/rclone.conf", sa_dir)
     _audit(db, current_admin, "gdrive_sa_rotate", "gdrive_sa", 0, {"sa_file": result.get("sa_file")})
     db.commit()
-    return {"success": True, "sa_file": result.get("sa_file"), "mode": result.get("mode")}
+    # 轮换只改了 rclone.conf：SA 在挂载/rcd 启动时加载，代码库里没有应用内重挂能力，
+    # 必须把"需要重新挂载才生效"明确告诉管理员，否则以为切了其实还在用旧账号。
+    needs_remount = bool(result.get("needs_remount", result.get("changed", False)))
+    return {
+        "success": True,
+        "sa_file": result.get("sa_file"),
+        "mode": result.get("mode"),
+        "needs_remount": needs_remount,
+        "remount_hint": (
+            "已改写 rclone.conf，但正在运行的 rclone 仍在用旧账号：需在宿主机重新挂载"
+            "（重跑 scripts/rclone_vfs_mount.sh）或重启 rclone 控制面"
+            "（scripts/restart_rclone_rcd.sh）后才生效。"
+        ) if needs_remount else "",
+    }
 
 
 class RegistrationModeRequest(BaseModel):
