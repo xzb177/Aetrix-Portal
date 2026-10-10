@@ -381,10 +381,14 @@ const capsLoading = ref(true)
 const capsError = ref(false)
 const capGroups = computed(() => {
   const groups: { name: string; items: CapabilityCard[] }[] = []
-  for (const card of capabilities.value) {
-    const found = groups.find((g) => g.name === card.group)
-    if (found) found.items.push(card)
-    else groups.push({ name: card.group, items: [card] })
+  // 防御：API 返回异常时 capabilities 可能不是数组，避免整个页签白屏
+  const list = Array.isArray(capabilities.value) ? capabilities.value : []
+  for (const card of list) {
+    if (!card || typeof card !== 'object') continue
+    const groupName = (card as CapabilityCard).group || '其他'
+    const found = groups.find((g) => g.name === groupName)
+    if (found) found.items.push(card as CapabilityCard)
+    else groups.push({ name: groupName, items: [card as CapabilityCard] })
   }
   return groups
 })
@@ -422,7 +426,13 @@ async function loadCapabilities() {
   capsError.value = false
   try {
     const res = await fetchCapabilities()
-    capabilities.value = res.capabilities
+    // 防御：后端返回格式异常时保证 capabilities 始终是数组，避免页签白屏
+    const list = res && Array.isArray(res.capabilities) ? res.capabilities : []
+    capabilities.value = list
+    if (!list.length) {
+      // 空数组不算错误，模板会显示"暂无可配置的外部能力"
+      capsError.value = false
+    }
   } catch {
     // 拦截器已提示
     capsError.value = !capabilities.value.length
