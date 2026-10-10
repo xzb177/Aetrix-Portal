@@ -31,6 +31,9 @@ from urllib.parse import urlparse
 from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
 
+from backend.integrations import store
+from backend.models import SystemConfig
+
 logger = logging.getLogger(__name__)
 
 # 播放签名默认有效期：15 分钟
@@ -39,6 +42,131 @@ SIGN_TTL_SECONDS = 900
 TOKEN_TTL_DAYS = 30
 # 防盗链白名单配置键（SystemConfig）
 CONFIG_ALLOWED_REFERERS = "play_allowed_referers"
+
+# --- 防盗链配置（SystemConfig + store 热读，风格同 backend/emby_server/cdn.py） ---
+CONFIG_HOTLINK_ENABLED = "hotlink_protection_enabled"
+CONFIG_PLAY_SIGN_TTL = "play_sign_ttl_seconds"
+CONFIG_STRM_SIG_TTL = "strm_sig_ttl_seconds"
+
+DESCRIPTIONS = {
+    CONFIG_HOTLINK_ENABLED: "防盗链总开关：关闭后播放端点跳过播放签名校验（兼容老客户端）",
+    CONFIG_PLAY_SIGN_TTL: "播放签名有效期（秒），范围 60~86400",
+    CONFIG_STRM_SIG_TTL: ".strm 签名有效期（秒），范围 300~86400",
+}
+
+HOTLINK_DEFAULT = True
+PLAY_TTL_DEFAULT = 900
+STRM_TTL_DEFAULT = 3600
+PLAY_TTL_MIN, PLAY_TTL_MAX = 60, 86400
+STRM_TTL_MIN, STRM_TTL_MAX = 300, 86400
+
+_TRUTHY = {"true", "1", "yes", "on"}
+_FALSY = {"false", "0", "no", "off"}
+
+
+def _clamp_ttl(raw, lo: int, hi: int, default: int) -> int:
+    if raw is None:
+        return default
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, value))
+
+
+def hotlink_enabled(db: Session | None = None) -> bool:
+    """防盗链总开关，默认开启（db 为 None / 读失败 / 非法值均回落默认启用=现状）。
+
+    播放链路调用：配置表读不到时 fail-open（放行），播放不能因为配置故障全挂。
+    """
+    if db is None:
+        return HOTLINK_DEFAULT
+    try:
+        raw = store.get_value(db, CONFIG_HOTLINK_ENABLED)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("防盗链开关读取失败，fail-open 默认启用: %s", exc)
+        return HOTLINK_DEFAULT
+    if raw is None:
+        return HOTLINK_DEFAULT
+    value = str(raw).strip().lower()
+    if value in _TRUTHY:
+        return True
+    if value in _FALSY:
+        return False
+    return HOTLINK_DEFAULT
+
+
+def play_sign_ttl_seconds(db: Session | None = None) -> int:
+    """播放签名有效期（秒），热读 SystemConfig，非法值钳制到 60~86400。"""
+    if db is None:
+        return PLAY_TTL_DEFAULT
+    try:
+        raw = store.get_value(db, CONFIG_PLAY_SIGN_TTL)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("播放签名 TTL 读取失败，用默认值: %s", exc)
+        return PLAY_TTL_DEFAULT
+    return _clamp_ttl(raw, PLAY_TTL_MIN, PLAY_TTL_MAX, PLAY_TTL_DEFAULT)
+
+
+def strm_sig_ttl_seconds(db: Session | None = None) -> int:
+    """`.strm` 签名有效期（秒）——全项目唯一的 TTL 配置读取实现。
+
+    ``strm_sign.strm_sig_ttl_seconds`` 只是薄委托到这里（横切能力只许一套）。
+    """
+    if db is None:
+        return STRM_TTL_DEFAULT
+    try:
+        raw = store.get_value(db, CONFIG_STRM_SIG_TTL)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(".strm 签名 TTL 读取失败，用默认值: %s", exc)
+        return STRM_TTL_DEFAULT
+    return _clamp_ttl(raw, STRM_TTL_MIN, STRM_TTL_MAX, STRM_TTL_DEFAULT)
+
+
+def config_payload(db: Session | None = None) -> dict:
+    """管理后台读取：当前值 + 默认值（前端卡片用）。"""
+    return {
+        "enabled": hotlink_enabled(db),
+        "play_sign_ttl": play_sign_ttl_seconds(db),
+        "strm_sig_ttl": strm_sig_ttl_seconds(db),
+        "defaults": {
+            "enabled": HOTLINK_DEFAULT,
+            "play_sign_ttl": PLAY_TTL_DEFAULT,
+            "strm_sig_ttl": STRM_TTL_DEFAULT,
+        },
+    }
+
+
+def write_config(db: Session, *, enabled: bool, play_sign_ttl: int,
+                 strm_sig_ttl: int) -> dict:
+    """管理后台写入：校验范围 → 逐键 upsert SystemConfig（含 description）→ 失效热缓存。"""
+    try:
+        play_sign_ttl = int(play_sign_ttl)
+        strm_sig_ttl = int(strm_sig_ttl)
+    except (TypeError, ValueError):
+        raise ValueError("播放签名有效期与 .strm 签名有效期必须为整数秒")
+    if not (PLAY_TTL_MIN <= play_sign_ttl <= PLAY_TTL_MAX):
+        raise ValueError(f"播放签名有效期需在 {PLAY_TTL_MIN}~{PLAY_TTL_MAX} 秒之间")
+    if not (STRM_TTL_MIN <= strm_sig_ttl <= STRM_TTL_MAX):
+        raise ValueError(f".strm 签名有效期需在 {STRM_TTL_MIN}~{STRM_TTL_MAX} 秒之间")
+
+    enabled = bool(enabled)
+    values = (
+        (CONFIG_HOTLINK_ENABLED, "true" if enabled else "false"),
+        (CONFIG_PLAY_SIGN_TTL, str(play_sign_ttl)),
+        (CONFIG_STRM_SIG_TTL, str(strm_sig_ttl)),
+    )
+    for key, value in values:
+        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+        if row is None:
+            db.add(SystemConfig(key=key, value=value, description=DESCRIPTIONS[key]))
+        else:
+            row.value = value
+            row.description = DESCRIPTIONS[key]
+    db.commit()
+    for key, _ in values:
+        store.invalidate(key)
+    return config_payload(db)
 
 
 def _signing_key() -> bytes:

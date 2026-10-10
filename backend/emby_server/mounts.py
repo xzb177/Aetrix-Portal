@@ -219,6 +219,9 @@ REMOTE_MEDIA_EXTS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m2ts", ".ts", ".m4v", ".strm",
 }
 STRM_EXT = ".strm"
+
+#: legacy（未签名）.strm 的每进程告警去重：同一 path 只 warning 一次，避免刷屏
+_STRM_LEGACY_WARNED: set[str] = set()
 REMOTE_SUBTITLE_EXTS = {".srt", ".ass", ".ssa", ".vtt", ".sub"}
 
 MOUNT_PATH_PREFIX = "mount://"
@@ -398,12 +401,28 @@ def local_play_target(path: str) -> PlayTarget:
     if _is_strm_name(path):
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                url = strm_url(f.read())
+                content = f.read()
         except OSError as exc:
             raise MountError(f"读取 STRM 文件失败: {path} ({exc})") from exc
-        if url:
-            return PlayTarget("url", validate_remote_url(url), {"User-Agent": MOUNT_UA})
-        raise MountError(f"STRM 文件里没有可用的直链: {path}")
+        url = strm_url(content)
+        if not url:
+            raise MountError(f"STRM 文件里没有可用的直链: {path}")
+        # 防盗链：.strm 内容验签（延迟 import：strm_sign 在函数内引用 mounts.strm_url）
+        from backend.emby_server import strm_sign
+        clean_url, status = strm_sign.verify_strm_url(content)
+        if status == "bad":
+            raise MountError(f"STRM 签名无效或已过期: {path}")
+        if status == "legacy":
+            if path not in _STRM_LEGACY_WARNED:
+                _STRM_LEGACY_WARNED.add(path)
+                logger.warning("STRM 为未签名直链(legacy)，将由刷新任务补签名: %s", path)
+            target_url = url
+        else:
+            target_url = clean_url
+        # Drive 私有化：服务端用 SA Bearer token 拉流（非 Drive URL / 拿不到 token 时返回 {}）
+        from backend.emby_server import drive_auth
+        headers = {"User-Agent": MOUNT_UA, **drive_auth.drive_auth_headers(target_url)}
+        return PlayTarget("url", validate_remote_url(target_url), headers)
     return PlayTarget("local", path)
 
 

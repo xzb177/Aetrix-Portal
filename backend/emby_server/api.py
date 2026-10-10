@@ -2964,9 +2964,12 @@ async def playback_info(
     # 与升级前逐字节一致。
     use_cdn = await run_db(cdn.enabled, db)
     # 播放短期签名（双轨）：老客户端继续用 api_key；新 URL 额外带 uid/exp/sign，
-    # 播放端点优先验签。签名 15 分钟过期、绑定 user_id+item_id，泄露后窗口极小。
-    play_exp, play_sig = play_sign.issue_play_sign(
-        user.id, item.guid, play_sign.SIGN_TTL_SECONDS if api_key else PLAY_SIGN_URL_TTL)
+    # 播放端点优先验签。签名有效期可配（play_sign_ttl_seconds，默认 15 分钟）、绑定
+    # user_id+item_id，泄露后窗口极小。网页端（无 api_key）保留 6 小时：
+    # 暂停/切片请求可能拖很久（见 PLAY_SIGN_URL_TTL 注释），缩短会断长片播放。
+    # P0：async 路由里同步 DB 读走 run_db 线程池（store 热缓存命中时只是内存读）。
+    play_ttl = await run_db(play_sign.play_sign_ttl_seconds, db) if api_key else PLAY_SIGN_URL_TTL
+    play_exp, play_sig = play_sign.issue_play_sign(user.id, item.guid, play_ttl)
     signed_qs = f"&uid={user.id}&exp={play_exp}&sign={play_sig}"
     key_qs = f"&api_key={api_key}" if api_key else ""
     # 字幕 DeliveryUrl：缓存里的 media_source 不带凭据（不能把别人的凭据缓存出去），

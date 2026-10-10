@@ -320,6 +320,11 @@ def get_play_user(
     if sign and exp_s and uid_s and item_id:
         from backend.emby_server import play_sign
 
+        # 防盗链总开关（默认开）：关闭时跳过签名分支，走老客户端回退逻辑。
+        # hotlink_enabled 内部 fail-open：配置读失败时视为启用，不弱化验签。
+        if not play_sign.hotlink_enabled(db):
+            return get_emby_user(request, db, credentials)
+
         try:
             exp = int(exp_s)
             uid = int(uid_s)
