@@ -258,10 +258,25 @@ def maybe_promote_to_cache(session_id: str, info: dict) -> bool:
     if os.path.isdir(dst):
         # 并发转完：先到的已落盘，后到的直接丢弃（调用方正常回收删目录）
         return False
+    # 两步落盘，堵住上面 isdir 检查与真正落盘之间的窗口：
+    # 先把 src_dir 搬到缓存目录下的唯一临时名（与 dst 同目录，保证 rename 不跨设备），
+    # 再用 os.rename 原子认领 dst。若直接 shutil.move(src_dir, dst) 而此刻 dst 已被
+    # 并发方建好，move 不会报错，而是把 src_dir 整个塞进 dst 里（dst/<src_basename>），
+    # 造成缓存目录嵌套与磁盘双倍占用。rename 到已存在的非空目录则必然抛 OSError，
+    # 后到者据此判定输掉竞态，丢弃自己的临时拷贝，绝不污染先到者的 dst。
+    tmp = dst + ".promote-" + uuid.uuid4().hex[:12]
     try:
-        shutil.move(src_dir, dst)
+        shutil.move(src_dir, tmp)
     except OSError as exc:
         logger.warning("转码缓存落盘失败 %s: %s", session_id, exc)
+        return False
+    try:
+        os.rename(tmp, dst)
+    except OSError as exc:
+        # 竞态失败方（dst 已存在）或落盘失败：清掉自己的临时目录后返回。
+        shutil.rmtree(tmp, ignore_errors=True)
+        if not os.path.isdir(dst):
+            logger.warning("转码缓存落盘失败 %s: %s", session_id, exc)
         return False
     try:
         meta = {
