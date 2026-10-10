@@ -207,8 +207,11 @@ def test_claim_exact_accounting_sequential(db):
     assert p.remaining_count == 0
 
 
-@pytest.mark.skipif(os.environ.get("DATABASE_URL") is None,
-                    reason="needs postgres (DATABASE_URL)")
+@pytest.mark.skipif(
+    os.environ.get("DATABASE_TYPE") != "postgresql"
+    or not os.environ.get("DATABASE_URL"),
+    reason="needs postgres (DATABASE_TYPE=postgresql + DATABASE_URL)",
+)
 def test_claim_no_overissue_pg():
     """PG 真并发：20 线程抢 10 个名额，精确记账不超发
 
