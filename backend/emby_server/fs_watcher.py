@@ -19,6 +19,13 @@
   不会少入库，只是慢一点。监听**永远不能影响扫描/播放/接口**。
 - **容器重启自动恢复**：``start_fs_watcher()`` 在应用 lifespan 里调（与追新线程同一处），
   从数据库读「当前所有启用库的本地路径」重建监听，不写死任何路径。
+- **启动不等同步**：``start_fs_watcher()`` 只起 observer + 防抖线程就立即返回，
+  初始的 ``sync_from_db()`` 在后台线程里做。recursive 监听在大目录树
+  （/strm 8.5 万文件）下要几十分钟，同步等它会把 worker 主线程卡死、
+  后面的 Redis 扫描队列消费线程永远起不来。后台建，建完即用。
+- **大树直接降级**：单个路径子目录超过 ``FS_WATCH_MAX_SUBDIRS``（默认 2000，
+  环境变量可调）就不做 recursive 监听，记成 degraded 走定时扫描——
+  建 watch 本身在这种规模下就是灾难，还会吃光 inotify 上限。
 """
 
 from __future__ import annotations
@@ -41,6 +48,16 @@ FS_EVENT_MAX_TRIGGERS = 8
 FS_EVENT_MIN_INTERVAL_SEC = 60.0
 #: 同时监听的最大目录数（watchdog/inotify 每个目录占一个 watch，实例数有限）
 FS_WATCH_MAX_DIRS = 4000
+#: 单个监听路径的子目录预算：超过就降级为定时扫描。
+#: watchdog 的 recursive=True 会给**每个子目录**建一个 inotify watch；/strm 这种
+#: 8.5 万文件的大树建 watch 本身就要几十分钟，还可能吃光 max_user_watches。
+#: 预算内快速建，超预算直接降级（理由会写进 _DEGRADED，界面看得见）。
+#: 非法值回落默认。
+try:
+    FS_WATCH_MAX_SUBDIRS = max(100, int(
+        (os.getenv("FS_WATCH_MAX_SUBDIRS") or "2000").strip() or 2000))
+except ValueError:
+    FS_WATCH_MAX_SUBDIRS = 2000
 #: 周期性对账间隔（秒）：inotify 会漏事件（watch 上限 / 容器重建 / 目录被换掉），
 #: 定期与数据库对一次差才能发现。**只重建监听集合，不遍历目录、不列文件**，
 #: 所以它不会退化成周期性全量读取。
@@ -80,6 +97,12 @@ _LAST_RECONCILE: dict = {"at": 0.0, "changed": None}
 _OBSERVER = None
 _THREAD: Optional[threading.Thread] = None
 _STOP: Optional[threading.Event] = None
+#: 初始同步线程（start_fs_watcher 里起，sync_from_db 在它里面跑）
+_SYNC_THREAD: Optional[threading.Thread] = None
+#: 同步串行锁：初始后台同步和对账线程都调 sync_from_db，不能重叠跑
+#: （重叠会导致 _WATCHES 被两个线程同时 unschedule/schedule）。
+#: 持有它的都是后台线程，阻塞等待是安全的。
+_SYNC_LOCK = threading.Lock()
 _STATS = {"events": 0, "triggers": 0, "coalesced": 0, "errors": 0}
 
 
@@ -195,6 +218,42 @@ def is_watchable(path: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _count_subdirs_capped(path: str, cap: int) -> int:
+    """数 ``path`` 下的子目录个数，到 ``cap`` 就停
+
+    只为「要不要 recursive 监听」做决策：watchdog 的 recursive=True 会给每个子目录
+    建一个 inotify watch，大树下建 watch 本身就要几十分钟。cap 上限让这个判断是
+    O(cap) 而不是 O(整棵树)——8.5 万文件的树也不用全走完。
+    """
+    count = 0
+    stack = [path]
+    seen: set[tuple[int, int]] = set()
+    while stack:
+        cur = stack.pop()
+        try:
+            st = os.stat(cur)
+        except OSError:
+            continue
+        key = (st.st_dev, st.st_ino)
+        if key in seen:          # 防 symlink 循环
+            continue
+        seen.add(key)
+        try:
+            with os.scandir(cur) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            count += 1
+                            if count >= cap:
+                                return count
+                            stack.append(entry.path)
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return count
+
+
 # ==================== 事件回调（只记账，不做重活）====================
 
 class _CoalescingHandler(FileSystemEventHandler):  # type: ignore[misc]
@@ -301,12 +360,25 @@ def _watch_now(library_id: int, paths: tuple[str, ...]) -> None:
                 except Exception:  # noqa: BLE001 — 旧的 watch 可能已经失效
                     pass
         _DEGRADED.pop(library_id, None)
+        if observer is None:
+            # stop_fs_watcher() 在后台同步线程跑一半时被调（重启/测试竞态）：
+            # 没有 observer 就建不了 watch，记降级而不是抛 AttributeError。
+            _DEGRADED[library_id] = "监听器已停止"
+            return
         handles: dict = {}
         reasons: list[str] = []
         for path in paths:
             ok, why = is_watchable(path)
             if not ok:
                 reasons.append(f"{path}：{why}")
+                continue
+            # 大树保护：子目录超过预算就不做 recursive 监听。建 watch 本身在这种
+            # 规模下就要几十分钟，还会吃光 inotify 上限；直接降级为定时扫描，
+            # 该库不会少入库，只是新片发现慢一点（分钟级轮询兜底）。
+            ndirs = _count_subdirs_capped(path, FS_WATCH_MAX_SUBDIRS + 1)
+            if ndirs > FS_WATCH_MAX_SUBDIRS:
+                reasons.append(
+                    f"{path}：子目录过多（>{FS_WATCH_MAX_SUBDIRS}），已降级为定时扫描")
                 continue
             try:
                 handles[path] = observer.schedule(
@@ -391,7 +463,16 @@ def sync_from_db() -> dict:
     **排除清单与追新用同一套语义**（v2.46.0）：被排除的库既不进追新轮询，也不被
     inotify 监听。之前这里只看 ``is_enabled``/``fs_watch``，于是“已排除追新”的库
     仍然会因为本机文件变动被触发增量扫描——用户关掉的东西还在后台跑。
+
+    **串行执行**：初始后台同步和对账线程都会调这里，``_SYNC_LOCK`` 保证同一时间
+    只有一个同步在跑（重叠跑会导致 _WATCHES 被两个线程同时改）。
     """
+    with _SYNC_LOCK:
+        return _sync_from_db()
+
+
+def _sync_from_db() -> dict:
+    """sync_from_db 的实现本体（调用方只走带锁的 sync_from_db）"""
     status = {"watched": 0, "degraded": 0, "dirs": 0, "available": WATCHDOG_AVAILABLE}
     if not WATCHDOG_AVAILABLE:
         return status
@@ -442,13 +523,32 @@ def sync_from_db() -> dict:
     return status
 
 
+def _initial_sync_async() -> None:
+    """初始同步的后台入口：start_fs_watcher 里起线程调这个，主线程不等它
+
+    sync_from_db 会对每个本机路径做 recursive 监听；大目录树（/strm 8.5 万文件）
+    下这一步要几十分钟。同步等它等于把整个 worker 启动卡死——排在后面的
+    Redis 扫描队列消费线程起不来，扫描就一直「等待调度」。
+    """
+    try:
+        status = sync_from_db()
+        logger.info("fs-watch: 初始同步完成，监听 %s 个库 / %s 个目录（降级 %s 个）",
+                    status["watched"], status["dirs"], status["degraded"])
+    except Exception:  # noqa: BLE001 — 同步失败只影响实时监听，定时扫描照跑
+        logger.warning("fs-watch: 初始同步失败（已降级为定时扫描）", exc_info=True)
+
+
 def start_fs_watcher() -> bool:
-    """启动监听（应用 lifespan 里调；重复调用是安全的）
+    """启动监听（应用 lifespan / worker 启动里调；重复调用是安全的）
 
     返回是否真的起了监听。**失败返回 False 而不是抛异常**：启动监听失败绝不能
     让整个服务起不来——最坏情况就是退回定时扫描。
+
+    **调用立即返回**：初始的 sync_from_db 在后台线程里做。之前它是同步的，
+    大目录树下会把调用方（worker 主线程）卡住几十分钟，导致后面的启动步骤
+    （如 Redis 扫描队列消费）永远执行不到。
     """
-    global _OBSERVER, _THREAD, _STOP
+    global _OBSERVER, _THREAD, _STOP, _SYNC_THREAD
     with _STATE_LOCK:
         if not WATCHDOG_AVAILABLE or _THREAD is not None:
             return False
@@ -465,18 +565,21 @@ def start_fs_watcher() -> bool:
                                   name="fs-watch-drain", daemon=True)
         thread.start()
         _THREAD = thread
-    status = sync_from_db()
-    logger.info("fs-watch: 已启动，监听 %s 个库 / %s 个目录（降级 %s 个）",
-                status["watched"], status["dirs"], status["degraded"])
+        sync_thread = threading.Thread(target=_initial_sync_async,
+                                       name="fs-watch-init-sync", daemon=True)
+        sync_thread.start()
+        _SYNC_THREAD = sync_thread
+    logger.info("fs-watch: 监听线程已启动，初始同步在后台进行（完成后即生效）")
     return True
 
 
 def stop_fs_watcher() -> None:
     """停掉监听（测试与优雅退出用）"""
-    global _OBSERVER, _THREAD, _STOP
+    global _OBSERVER, _THREAD, _STOP, _SYNC_THREAD
     with _STATE_LOCK:
         observer, _THREAD = _OBSERVER, None
         stop_event, _STOP = _STOP, None
+        _SYNC_THREAD = None
         _WATCHES.clear()
         _LIBRARY_PATHS.clear()
         _DEGRADED.clear()
@@ -501,6 +604,9 @@ def watcher_status() -> dict:
         return {
             "available": WATCHDOG_AVAILABLE,
             "running": _THREAD is not None,
+            # 初始同步是否还在后台跑：跑的时候 watched_libraries 为空是正常的，
+            # 不是“没起作用”。界面可以用这个给一个“同步中”的提示。
+            "sync_running": _SYNC_THREAD is not None and _SYNC_THREAD.is_alive(),
             "debounce_sec": FS_EVENT_DEBOUNCE_SEC,
             "min_interval_sec": FS_EVENT_MIN_INTERVAL_SEC,
             "reconcile_interval_sec": RECONCILE_INTERVAL_SEC,
