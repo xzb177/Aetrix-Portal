@@ -48,6 +48,8 @@ logger = logging.getLogger(__name__)
 # 并发按 CPU 自适应（cpu_budget）：未配置时按核数一半，永远给前台留一核
 ENRICH_WORKERS = _cpu_workers("ENRICH_WORKERS")
 ENRICH_BATCH = max(10, int(os.getenv("ENRICH_BATCH", "100") or 100))
+# TMDB 批量开关：1=抢单后批量调 batch_search/batch_details，0=逐条原逻辑
+ENRICH_TMDB_BATCH = os.getenv("ENRICH_TMDB_BATCH", "1") == "1"
 ENRICH_IDLE_POLL_SEC = max(5, int(os.getenv("ENRICH_IDLE_POLL_SEC", "30") or 30))
 ENRICH_ENABLED = (os.getenv("ENRICH_WORKER", "1") or "1").strip().lower() not in {
     "0", "false", "no", "off",
@@ -312,9 +314,195 @@ def _fetch_episode_tmdb(item: Any, inherit_parent: Optional[dict],
             logger.debug("单集剧照预热失败: %s", exc)
 
 
-def _enrich_fetch(item: Any, holder: Optional[dict] = None,
-                  inherit_parent: Optional[dict] = None) -> dict:
-    """IO 阶段（无 DB 写事务）：side 图片/字幕 → NFO → TMDB。
+def _tmdb_plan_for_item(item, nfo_data, douban_first_hit, kind, needs_repair):
+    """根据 item、nfo 与豆瓣命中情况规划 TMDB 操作（纯函数，无网络调用）。
+
+    返回三种计划之一：
+    - {"op": "details", ...}：需要拉取 TMDB 详情
+    - {"op": "search", ...}：需要按名称搜索
+    - {"op": "none"}：无需操作
+    """
+    from backend.emby_server.tmdb import tmdb_client
+
+    name = getattr(item, "name", None)
+    production_year = getattr(item, "production_year", None)
+    poster_path = getattr(item, "poster_path", None)
+    primary_image_url = getattr(item, "primary_image_url", None)
+    imdb_id = getattr(item, "imdb_id", None)
+    aliases = getattr(item, "aliases", None)
+
+    # 1) NFO 中已有 tmdb_id：仅在需要补详情且客户端已配置时拉取
+    if nfo_data and nfo_data.get("tmdb_id"):
+        tmdb_id = str(nfo_data["tmdb_id"])
+        want_details = bool(
+            needs_repair
+            or not (poster_path or primary_image_url)
+            or not (imdb_id and aliases))
+        if want_details and tmdb_client.configured:
+            return {"op": "details", "tmdb_id": tmdb_id, "why": "nfo", "kind": kind,
+            "name": name or "", "year": production_year}
+        return {"op": "none"}
+
+    # 2) 影视类且豆瓣未命中：先查别名映射，命中则直接拉详情，否则按名称搜索
+    if (tmdb_client.configured and kind in ("series", "movie")
+            and not douban_first_hit):
+        alias_id = _alias_tmdb_id(name or "")
+        if alias_id:
+            return {"op": "details", "tmdb_id": str(alias_id), "why": "alias", "kind": kind,
+            "name": name or "", "year": production_year}
+        return {"op": "search", "name": name or "", "year": production_year,
+                "kind": kind, "existing_id": getattr(item, "tmdb_id", None)}
+
+    # 3) 其余情况不做任何操作
+    return {"op": "none"}
+
+def _run_tmdb_batch(indexed_plans):
+    """三轮批量执行 TMDB 请求。
+
+    注意：op 为 "details" 且 why 为 "alias" 的 plan 必须额外携带 "name" 和
+    "year" 字段，供 Round 2 的 stale-alias 回退 search 使用（details plan
+    本身没有 name/year，调用方需预先填入）。
+    """
+    from backend.emby_server.tmdb import tmdb_client
+
+    out = {}  # key -> {"hit": None, "details": None, "transient": False}
+    if not indexed_plans:
+        return out
+    for key, _ in indexed_plans:
+        out[key] = {"hit": None, "details": None, "transient": False}
+
+    # Round 1: details
+    r1_keys = []
+    r1_ids = []
+    for key, plan in indexed_plans:
+        if plan["op"] == "details":
+            r1_keys.append(key)
+            r1_ids.append((plan["tmdb_id"], plan["kind"]))
+    r1_transient = set()
+    r1_details = {}
+    if r1_ids:
+        results, transient_idx = tmdb_client.batch_details(
+            r1_ids, return_transient=True
+        )
+        for i, key in enumerate(r1_keys):
+            r1_details[key] = results[i]
+            if i in transient_idx:
+                r1_transient.add(key)
+
+    # Round 2: search（含 stale alias 回退）
+    r2_keys = []
+    r2_queries = []
+    r2_is_stale = {}  # key -> True 表示是 stale-alias 回退的 search
+    for key, plan in indexed_plans:
+        if plan["op"] == "search":
+            r2_keys.append(key)
+            r2_queries.append((plan["name"], plan["year"], plan["kind"]))
+        elif plan["op"] == "details" and plan.get("why") == "alias":
+            # r1 未命中且非瞬时错误 → stale，用 plan 里的 name/year/kind 回退 search
+            if r1_details.get(key) is None and key not in r1_transient:
+                r2_keys.append(key)
+                r2_queries.append((plan["name"], plan["year"], plan["kind"]))
+                r2_is_stale[key] = True
+    r2_hits = {}
+    r2_transient = set()
+    if r2_queries:
+        hits, transient_idx = tmdb_client.batch_search(
+            r2_queries, return_transient=True
+        )
+        for i, key in enumerate(r2_keys):
+            r2_hits[key] = hits[i]
+            if i in transient_idx:
+                r2_transient.add(key)
+
+    # Round 3: details for hits + existing_id fallback
+    r3_keys = []
+    r3_ids = []
+    for key, plan in indexed_plans:
+        if key not in r2_hits:
+            continue
+        hit = r2_hits[key]
+        if hit is not None:
+            r3_keys.append(key)
+            r3_ids.append((str(hit["id"]), plan["kind"]))
+        elif plan.get("existing_id"):
+            r3_keys.append(key)
+            r3_ids.append((plan["existing_id"], plan["kind"]))
+    r3_details = {}
+    r3_transient = set()
+    if r3_ids:
+        results, transient_idx = tmdb_client.batch_details(
+            r3_ids, return_transient=True
+        )
+        for i, key in enumerate(r3_keys):
+            r3_details[key] = results[i]
+            if i in transient_idx:
+                r3_transient.add(key)
+
+    # 汇总到 out
+    for key, plan in indexed_plans:
+        if plan["op"] == "search" or r2_is_stale.get(key):
+            # search plan 或 stale alias 回退：hit/details 来自 r2/r3
+            out[key]["hit"] = r2_hits.get(key)
+            out[key]["details"] = r3_details.get(key)
+            out[key]["transient"] = (key in r2_transient) or (key in r3_transient)
+        else:
+            # details plan (why nfo/alias 且未 stale)
+            out[key]["details"] = r1_details.get(key)
+            out[key]["transient"] = key in r1_transient
+
+    return out
+
+def _apply_tmdb_plan_result(result, item, plan, out, kind):
+    """把批量 TMDB 结果按 plan 写回 result dict。
+
+    参数:
+        result: dict，已有 tmdb_hit/tmdb_details 等键，可直接修改。
+        item: 对象，有 .name 属性。
+        plan: dict，形如 {"op": "details", "tmdb_id": str, "why": "nfo"|"alias",
+            "kind": str, "name": str, "year": ...} 或 {"op": "search", ...}。
+        out: dict，形如 {"hit": hit_or_None, "details": details_or_None,
+            "transient": bool}。
+        kind: 字符串，条目类型（本函数未直接使用，保留对齐调用方签名）。
+
+    语义:
+        - transient：标记失败并返回，等待后续重试。
+        - details/nfo：直接写 tmdb_details。
+        - details/alias：命中则写 tmdb_id 与 tmdb_details；stale（TMDB 404）
+          则回退到 search 的 hit/details。
+        - search：写 tmdb_hit 与 tmdb_details。
+    """
+    if out.get("transient"):
+        result["ok"] = False
+        result["error"] = "tmdb transient, retry later"
+        return
+    op = plan["op"]
+    if op == "details" and plan.get("why") == "nfo":
+        result["tmdb_details"] = out["details"]
+    elif op == "details" and plan.get("why") == "alias":
+        progress.note_stage("enrich_alias_hit")
+        if out["details"] is not None:
+            result["tmdb_id"] = plan["tmdb_id"]
+            result["tmdb_details"] = out["details"]
+        else:
+            # stale：回退到 search 的结果（out 里已是 search 的 hit/details）
+            progress.note_stage("enrich_alias_stale")
+            logger.warning("alias tmdb_id=%s stale (TMDB 404), fallback to search name=%r",
+                           plan["tmdb_id"], item.name)
+            result["tmdb_hit"] = out["hit"]
+            if out["hit"] and out["hit"].get("id"):
+                result["tmdb_id"] = str(out["hit"]["id"])
+            result["tmdb_details"] = out["details"]
+    elif op == "search":
+        result["tmdb_hit"] = out["hit"]
+        result["tmdb_details"] = out["details"]
+
+
+def _enrich_fetch_pre(item: Any, holder: Optional[dict] = None,
+                      inherit_parent: Optional[dict] = None):
+    """IO 阶段前半：side 图片/字幕 → NFO → 豆瓣优先。
+
+    返回 (result, tmdb_ctx)：tmdb_ctx 为 None 表示已终态（pure_inherit 或失败），
+    无需走 TMDB；否则 tmdb_ctx 含 kind/needs_repair/tmdb_plan，供批量或单条 TMDB 用。
 
     返回待写入的数据包，写库阶段只做纯 DB 操作。
 
@@ -369,7 +557,7 @@ def _enrich_fetch(item: Any, holder: Optional[dict] = None,
             # 单集 TMDB 补全（v2.50.0）：父级有 tmdb_id 时拉取本集标题/简介/剧照
             # 季接口带缓存，同一季多集只打 1 次 TMDB；失败静默，不影响继承主流程
             _fetch_episode_tmdb(item, inherit_parent, result)
-            return result
+            return result, None
 
         # 2. NFO（B 方案：NFO 管文字；series/season/episode/movie 全支持）
         if kind:
@@ -382,7 +570,7 @@ def _enrich_fetch(item: Any, holder: Optional[dict] = None,
         # 真正需要本地文件却没有 → 无从补全，判失败让退避重试
         result["ok"] = False
         result["error"] = "无 file_path，无法重建 ScanFile"
-        return result
+        return result, None
     else:
         logger.debug("补全 %s 无 file_path（容器条目），仅走 TMDB：%s",
                      item_type, item.name)
@@ -416,51 +604,84 @@ def _enrich_fetch(item: Any, holder: Optional[dict] = None,
         except Exception as exc:
             logger.debug("豆瓣优先搜索失败 %s: %s", item.name, exc)
 
+    # NFO tmdb_id 无条件落 result（原 TMDB 段首行逻辑，前移以便批量规划）
+    if nfo_data and nfo_data.get("tmdb_id"):
+        result["tmdb_id"] = str(nfo_data["tmdb_id"])
+    needs_repair = bool(getattr(item, "repair_requested_at", None))
+    tmdb_plan = _tmdb_plan_for_item(
+        item, nfo_data, result.get("douban_first_hit"), kind, needs_repair)
+    tmdb_ctx = {
+        "kind": kind,
+        "needs_repair": needs_repair,
+        "tmdb_plan": tmdb_plan,
+    }
+    return result, tmdb_ctx
+
+
+def _enrich_fetch_tmdb_post(result: dict, item: Any, tmdb_ctx: dict,
+                              batch_out: Optional[dict] = None) -> dict:
+    """IO 阶段后半：TMDB（批量或单条）→ 原语言海报 → 豆瓣兜底 → 图片预热。
+
+    batch_out 为 None 时走原逐条逻辑（_sc._tmdb_work）；否则为
+    _run_tmdb_batch 返回的单条结果 {"hit","details","transient"}，走批量应用。
+    返回 result（原地修改）。
+    """
+    from backend.emby_server import scanner as _sc
+    from backend.emby_server.tmdb import tmdb_client
+
+    kind = tmdb_ctx["kind"]
+    needs_repair = tmdb_ctx["needs_repair"]
+    nfo_data = result.get("nfo_data")
     # 3. TMDB（NFO 有 tmdb_id 就不搜，只按需取详情补图/补缺；
     # 豆瓣优先已命中的跳过 TMDB 搜索）
-    needs_repair = bool(getattr(item, "repair_requested_at", None))
+    # result["tmdb_id"] 已在 pre 阶段赋值（NFO 有 tmdb_id 时）
     try:
-        if nfo_data and nfo_data.get("tmdb_id"):
-            tmdb_id = str(nfo_data["tmdb_id"])
-            result["tmdb_id"] = tmdb_id
-            want_details = bool(
-                needs_repair
-                or not (item.poster_path or item.primary_image_url)
-                or not (item.imdb_id and item.aliases))
-            if want_details and tmdb_client.configured:
-                _hit, details = _sc._tmdb_work(
-                    False, "", None, kind, tmdb_id, True)
-                result["tmdb_details"] = details
-        elif (tmdb_client.configured and kind in ("series", "movie")
-              and not result.get("douban_first_hit")):
-            # 处方 12・零 API 别名匹配：同一部剧已在库里（换文件名/换译名重扫）
-            # 时，1 次 details 请求替代 4~5 次候选搜索——且绝不写错名字
-            # （只补 id/图/别名，名字以库里那份为准）。
-            alias_id = _alias_tmdb_id(item.name or "")
-            if alias_id:
-                progress.note_stage("enrich_alias_hit")
-                _hit, details = _sc._tmdb_work(
-                    False, "", None, kind, alias_id, True)
-                if details is None:
-                    progress.note_stage("enrich_alias_stale")
-                    logger.warning(
-                        "alias tmdb_id=%s stale (TMDB 404), fallback to search name=%r",
-                        alias_id, item.name)
-                    hit, details = _sc._tmdb_work(
-                        True, item.name or "", item.production_year, kind,
-                        None, True)
-                    result["tmdb_hit"] = hit
-                    if hit and hit.get("id"):
-                        result["tmdb_id"] = str(hit["id"])
-                else:
-                    result["tmdb_id"] = alias_id
-                result["tmdb_details"] = details
-            else:
-                hit, details = _sc._tmdb_work(
-                    True, item.name or "", item.production_year, kind,
-                    getattr(item, "tmdb_id", None), True)
-                result["tmdb_hit"] = hit
-                result["tmdb_details"] = details
+        if batch_out is not None:
+            # 批量路径：规划已在 pre 阶段完成，直接应用批量结果
+            _apply_tmdb_plan_result(
+                result, item, tmdb_ctx["tmdb_plan"], batch_out, kind)
+        else:
+                if nfo_data and nfo_data.get("tmdb_id"):
+                    tmdb_id = str(nfo_data["tmdb_id"])
+                    result["tmdb_id"] = tmdb_id
+                    want_details = bool(
+                        needs_repair
+                        or not (item.poster_path or item.primary_image_url)
+                        or not (item.imdb_id and item.aliases))
+                    if want_details and tmdb_client.configured:
+                        _hit, details = _sc._tmdb_work(
+                            False, "", None, kind, tmdb_id, True)
+                        result["tmdb_details"] = details
+                elif (tmdb_client.configured and kind in ("series", "movie")
+                      and not result.get("douban_first_hit")):
+                    # 处方 12・零 API 别名匹配：同一部剧已在库里（换文件名/换译名重扫）
+                    # 时，1 次 details 请求替代 4~5 次候选搜索——且绝不写错名字
+                    # （只补 id/图/别名，名字以库里那份为准）。
+                    alias_id = _alias_tmdb_id(item.name or "")
+                    if alias_id:
+                        progress.note_stage("enrich_alias_hit")
+                        _hit, details = _sc._tmdb_work(
+                            False, "", None, kind, alias_id, True)
+                        if details is None:
+                            progress.note_stage("enrich_alias_stale")
+                            logger.warning(
+                                "alias tmdb_id=%s stale (TMDB 404), fallback to search name=%r",
+                                alias_id, item.name)
+                            hit, details = _sc._tmdb_work(
+                                True, item.name or "", item.production_year, kind,
+                                None, True)
+                            result["tmdb_hit"] = hit
+                            if hit and hit.get("id"):
+                                result["tmdb_id"] = str(hit["id"])
+                        else:
+                            result["tmdb_id"] = alias_id
+                        result["tmdb_details"] = details
+                    else:
+                        hit, details = _sc._tmdb_work(
+                            True, item.name or "", item.production_year, kind,
+                            getattr(item, "tmdb_id", None), True)
+                        result["tmdb_hit"] = hit
+                        result["tmdb_details"] = details
         # 原语言海报（StrmAssistant #10）：IO 阶段预取语言偏好的海报，
         # 写库阶段直接用（写事务里不碰网络，见模块注释处方 1）。
         # poster_language() == "system" 时 images_with_language 返回 None，不额外请求。
@@ -544,6 +765,18 @@ def _enrich_fetch(item: Any, holder: Optional[dict] = None,
         + cast_urls)
 
     return result
+
+
+def _enrich_fetch(item: Any, holder: Optional[dict] = None,
+                  inherit_parent: Optional[dict] = None) -> dict:
+    """IO 阶段（无 DB 写事务）：side 图片/字幕 → NFO → TMDB。单条路径（批量失败回退用）。
+
+    行为与重构前逐行等价：pre → 单条 TMDB → post。
+    """
+    result, tmdb_ctx = _enrich_fetch_pre(item, holder, inherit_parent)
+    if tmdb_ctx is None:
+        return result
+    return _enrich_fetch_tmdb_post(result, item, tmdb_ctx, batch_out=None)
 
 
 def _apply_cast(db, item: Any, details: Optional[dict]) -> None:
@@ -1360,6 +1593,138 @@ def _process_item(db, item: Any, holder: Optional[dict] = None) -> str:
         return _mark_failed(db, item_id, attempts, str(exc))
 
 
+def _process_batch(db, batch: list) -> None:
+    """批量处理已抢到的条目：pre（逐条）→ TMDB 批量 → post+写库（逐条）。
+
+    与逐条 `_process_item` 等价，只是把 TMDB 环节换成批量：
+    1. 逐条跑 `_enrich_fetch_pre`（side/NFO/豆瓣优先），收集 tmdb_plan；
+    2. `_run_tmdb_batch` 一次跑完所有 TMDB 请求；
+    3. 逐条跑 `_enrich_fetch_tmdb_post` + 写库（与 `_process_item` 写库段一致）。
+
+    批量级异常 → 回退到逐条 `_process_item`；单条 transient → 该条 ok=False 进重试。
+    """
+    from backend.emby_server import mounts as mount_lib
+
+    # ---- Phase 1：逐条 pre ----
+    # (item, snapshot, result, tmdb_ctx, holder)
+    pre_results = []
+    holder: Optional[dict] = None
+    current_group = None
+    for item in batch:
+        if _stop_event.is_set():
+            break
+        gkey = item.series_id or item.id
+        if gkey != current_group:
+            holder = {}
+            current_group = gkey
+        snapshot = item if isinstance(item, _EnrichItemSnapshot) else _snapshot_item(item)
+        inherit_parent = _inherit_parent_info(db, snapshot)
+        if db.in_transaction():
+            db.rollback()
+        try:
+            result, tmdb_ctx = _enrich_fetch_pre(
+                snapshot, holder=holder, inherit_parent=inherit_parent)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("批量 pre 失败 id=%s: %s", snapshot.id, exc)
+            db.rollback()
+            # pre 异常按单条失败处理，记一个失败的占位结果
+            result = {"ok": False, "error": str(exc)[:200]}
+            tmdb_ctx = None
+            pre_failed_exc = exc
+        else:
+            pre_failed_exc = None
+        pre_results.append((item, snapshot, result, tmdb_ctx, pre_failed_exc))
+
+    # ---- Phase 2：TMDB 批量 ----
+    indexed = []
+    for i, (_, snapshot, result, tmdb_ctx, pre_exc) in enumerate(pre_results):
+        if tmdb_ctx is None or pre_exc is not None:
+            continue
+        plan = tmdb_ctx.get("tmdb_plan") or {"op": "none"}
+        if plan.get("op") != "none":
+            indexed.append((i, plan))
+    batch_out = {}
+    if indexed:
+        try:
+            batch_out = _run_tmdb_batch(indexed)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("批量 TMDB 失败（%d 条），回退逐条: %s", len(indexed), exc)
+            db.rollback()
+            # 回退：整批走原逐条路径
+            holder2: Optional[dict] = None
+            current_group2 = None
+            for item in batch:
+                if _stop_event.is_set():
+                    break
+                gkey = item.series_id or item.id
+                if gkey != current_group2:
+                    holder2 = {}
+                    current_group2 = gkey
+                started = time.monotonic()
+                outcome = _process_item(db, item, holder2)
+                progress.note_stage(
+                    "enrich_item", (time.monotonic() - started) * 1000.0)
+                progress.note_completed(outcome)
+            return
+
+    # ---- Phase 3：逐条 post + 写库 ----
+    for i, (item, snapshot, result, tmdb_ctx, pre_exc) in enumerate(pre_results):
+        if _stop_event.is_set():
+            break
+        started = time.monotonic()
+        item_id = snapshot.id
+        attempts = snapshot.enrich_attempts
+        mount_id = _mount_id_of(snapshot.file_path)
+        try:
+            if pre_exc is not None:
+                raise pre_exc
+            if tmdb_ctx is None:
+                fetched = result
+            else:
+                out = batch_out.get(
+                    i, {"hit": None, "details": None, "transient": False})
+                fetched = _enrich_fetch_tmdb_post(
+                    result, snapshot, tmdb_ctx, batch_out=out)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("批量补全 IO 失败 id=%s: %s", item_id, exc)
+            db.rollback()
+            if isinstance(exc, mount_lib.MountError):
+                outcome = _requeue_mount_unavailable(db, item_id, mount_id)
+            else:
+                outcome = _mark_failed(db, item_id, attempts, str(exc))
+            progress.note_stage(
+                "enrich_item", (time.monotonic() - started) * 1000.0)
+            progress.note_completed(outcome)
+            continue
+        if not fetched.get("ok"):
+            db.rollback()
+            outcome = _mark_failed(db, item_id, attempts,
+                                  fetched.get("error") or "fetch failed")
+            progress.note_stage(
+                "enrich_item", (time.monotonic() - started) * 1000.0)
+            progress.note_completed(outcome)
+            continue
+        try:
+            db.rollback()
+            fresh = db.query(em.MediaItem).filter(
+                em.MediaItem.id == item_id).first()
+            if fresh is None:
+                db.rollback()
+                outcome = "skip"
+            else:
+                _enrich_apply(db, fresh, fetched)
+                _st = (fresh.enrich_status or "")
+                outcome = "done" if _st == "done" else ("failed" if _st == "failed" else "retry")
+                db.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("批量补全写库失败 id=%s: %s", item_id, exc)
+            db.rollback()
+            outcome = _mark_failed(db, item_id, attempts, str(exc))
+        progress.note_stage(
+            "enrich_item", (time.monotonic() - started) * 1000.0)
+        progress.note_completed(outcome)
+
+
 def _worker_loop(worker_id: int) -> None:
     logger.info("补全 worker #%d 启动（L2/L3 后台补全）", worker_id)
     db = SessionLocal()
@@ -1381,23 +1746,28 @@ def _worker_loop(worker_id: int) -> None:
             # v2.42.9 第 5 批（处方 1+2）：批次按组（同一部剧）聚在一起返回，
             # 组内条目共享一份 _ScanContext——同一季的目录列举与 tvshow.nfo
             # 只付一次网络成本；组边界上丢弃重建，缓存不随积压增长。
-            holder: Optional[dict] = None
-            current_group = None
-            for item in batch:
-                if _stop_event.is_set():
-                    break
-                gkey = item.series_id or item.id
-                if gkey != current_group:
-                    holder = {}          # 新组：上一组的 ctx 缓存随之释放
-                    current_group = gkey
-                # v2.42.9：单条计时 + 结果计数。这两项就是「单条平均耗时」与
-                # 「近 5 分钟 done/分钟」的来源 —— 后面几批优化（纯继承 / ctx 复用 /
-                # 终态化）到底有没有把积压量降下来，靠它们验收。
-                started = time.monotonic()
-                outcome = _process_item(db, item, holder)
-                progress.note_stage(
-                    "enrich_item", (time.monotonic() - started) * 1000.0)
-                progress.note_completed(outcome)
+            # v2.53.1 TMDB 批量：多条时走 _process_batch（pre 逐条 → TMDB 批量 →
+            # post+写库逐条），批量失败自动回退逐条。
+            if ENRICH_TMDB_BATCH and len(batch) > 1:
+                _process_batch(db, batch)
+            else:
+                holder: Optional[dict] = None
+                current_group = None
+                for item in batch:
+                    if _stop_event.is_set():
+                        break
+                    gkey = item.series_id or item.id
+                    if gkey != current_group:
+                        holder = {}          # 新组：上一组的 ctx 缓存随之释放
+                        current_group = gkey
+                    # v2.42.9：单条计时 + 结果计数。这两项就是「单条平均耗时」与
+                    # 「近 5 分钟 done/分钟」的来源 —— 后面几批优化（纯继承 / ctx 复用 /
+                    # 终态化）到底有没有把积压量降下来，靠它们验收。
+                    started = time.monotonic()
+                    outcome = _process_item(db, item, holder)
+                    progress.note_stage(
+                        "enrich_item", (time.monotonic() - started) * 1000.0)
+                    progress.note_completed(outcome)
             # 批次之间释放 session 身份映射，避免长连接内存膨胀
             db.expire_all()
     finally:
