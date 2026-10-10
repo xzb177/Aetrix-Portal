@@ -523,3 +523,24 @@ def test_shared_drive_params_unchanged():
         drive_changes.get_start_page_token("DRIVE123")
     assert captured[0].get("driveId") == "DRIVE123"
     assert "spaces" not in captured[0]
+
+
+def test_changes_token_url_is_start_page_token():
+    """回归：getStartPageToken 的 REST 路径是 changes/startPageToken，
+    不是 changes/getStartPageToken（2026-10-10 生产实证：后者返回 HTML 404，
+    被误判成 DriveNotFoundError，所有盘被标记 dead、增量发现永远跑不起来）。"""
+    assert drive_changes.CHANGES_TOKEN_URL == \
+        "https://www.googleapis.com/drive/v3/changes/startPageToken"
+    assert drive_changes.CHANGES_LIST_URL == \
+        "https://www.googleapis.com/drive/v3/changes"
+
+    captured = []
+
+    def fake_api(url, token, params):
+        captured.append(url)
+        return {"startPageToken": "tok"}
+
+    with mock.patch.object(drive_changes, "_get_token", return_value="t"), \
+         mock.patch.object(drive_changes, "_api_get", side_effect=fake_api):
+        drive_changes.get_start_page_token("DRIVE123")
+    assert captured == [drive_changes.CHANGES_TOKEN_URL]

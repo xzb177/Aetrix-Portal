@@ -83,7 +83,11 @@ def _mark_dead_drive(drive_id: str) -> None:
 
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
-CHANGES_TOKEN_URL = "https://www.googleapis.com/drive/v3/changes/getStartPageToken"
+#: 注意：方法名叫 getStartPageToken，但 REST 路径是 changes/startPageToken
+#:（见 Drive API discovery 文档）。之前写成 changes/getStartPageToken，
+#: Google 返回的是 HTML 404，被 _api_get 误判成 DriveNotFoundError，
+#: 导致所有盘被标记 dead、增量发现永远跑不起来（2026-10-10 生产实证）。
+CHANGES_TOKEN_URL = "https://www.googleapis.com/drive/v3/changes/startPageToken"
 CHANGES_LIST_URL = "https://www.googleapis.com/drive/v3/changes"
 FILES_GET_URL = "https://www.googleapis.com/drive/v3/files/{file_id}"
 
