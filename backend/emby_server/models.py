@@ -748,6 +748,25 @@ class ChaseSourceState(Base):
     last_error = Column(Text)
 
 
+class StrmGenFile(Base):
+    """.strm 生成器增量状态：Drive 文件 -> .strm 文件的去重记录。
+
+    remote_path 为网盘根相对路径（主键）；file_id/size 变化时触发重建
+    （Drive 上替换文件会换 file_id，原地覆盖只变 size）。
+    状态随 PG 备份走，替代旧独立脚本的 sqlite 状态文件（容器重建即丢）。
+    由 Base.metadata.create_all 自动建表，老库无需 ALTER。
+    """
+
+    __tablename__ = "strm_gen_files"
+
+    remote_path = Column(String(1024), primary_key=True)
+    file_id = Column(String(128), nullable=False)
+    size = Column(BigInteger, default=0)
+    # 相对 /strm 容器的输出路径（如 "剧集/国产剧/xx.strm"）
+    strm_path = Column(String(1024), nullable=False)
+    updated_at = Column(DateTime, default=datetime.now)
+
+
 __all__ = [
     "Library",
     "ScanRun",
@@ -764,4 +783,5 @@ __all__ = [
     "ChaseFileSnapshot",
     "ChaseRun",
     "ChaseSourceState",
+    "StrmGenFile",
 ]

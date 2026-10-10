@@ -24,6 +24,9 @@
 - strm_gen_enabled：总开关，默认 true
 - strm_gen_source_dir：Drive 上的源目录（相对网盘根，如 "MoviePilot/"），默认 "MoviePilot/"
 - strm_gen_schedule：每天执行时刻 "HH:MM"，默认 "03:00"；空字符串 = 关闭定时
+  （按服务器本地时区解释，生产为悉尼时间 UTC+10/+11）
+- strm_gen_prune：是否删除 Drive 上已不存在的 .strm 文件及状态行，默认 false
+  （删文件不可逆：默认只上报不删，先在缺集报告确认再手动开启）
 - strm_gen_last_run：上次执行完成时间（ISO）
 - strm_gen_last_stats：上次执行统计（JSON）
 """
@@ -49,6 +52,7 @@ CONFIG_SOURCE_DIR = "strm_gen_source_dir"
 CONFIG_SCHEDULE = "strm_gen_schedule"
 CONFIG_LAST_RUN = "strm_gen_last_run"
 CONFIG_LAST_STATS = "strm_gen_last_stats"
+CONFIG_PRUNE = "strm_gen_prune"
 
 DEFAULT_SOURCE_DIR = "MoviePilot/"
 DEFAULT_SCHEDULE = "03:00"
@@ -85,13 +89,36 @@ def source_dir(db) -> str:
 
 
 def schedule(db) -> str:
-    """每天执行时刻 "HH:MM"，非法/空 = 关闭定时。"""
+    """每天执行时刻 "HH:MM"，非法/空 = 关闭定时。
+
+    注意：按服务器本地时区解释（生产为悉尼时间 UTC+10/+11），
+    与用户所在时区可能有差，管理后台配置项上有同样提示。
+    """
     raw = _db_config(db, CONFIG_SCHEDULE, DEFAULT_SCHEDULE).strip()
     if len(raw) == 5 and raw[2] == ":" and raw[:2].isdigit() and raw[3:].isdigit():
         hh, mm = int(raw[:2]), int(raw[3:])
         if 0 <= hh <= 23 and 0 <= mm <= 59:
             return raw
     return ""
+
+
+def prune_enabled(db) -> bool:
+    """是否删除 Drive 上已不存在的 .strm 文件及状态行。
+
+    默认关闭（只上报不删）：删文件是不可逆操作，先让用户在缺集报告里
+    确认确实不需要了再手动开启。
+    """
+    return _db_config(db, CONFIG_PRUNE, "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _safe_relpath(rel: str) -> str:
+    """清理相对路径中的危险分量（纵深防御）。
+
+    Drive 本身不允许 "/" 和纯 ".." 文件名，正常走不到这里；
+    但输出路径直接拼接到 /strm 下，必须保证拼不出目录穿越。
+    """
+    parts = [p for p in rel.replace("\\", "/").split("/") if p not in ("", ".", "..")]
+    return "/".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +130,7 @@ def strm_relpath(root_relpath: str, src_prefix: str) -> str:
     rel = root_relpath
     if src_prefix and rel.startswith(src_prefix):
         rel = rel[len(src_prefix):]
+    rel = _safe_relpath(rel)  # 防目录穿越（纵深防御）
     base, _ext = os.path.splitext(rel)
     return base + ".strm"
 
@@ -121,6 +149,12 @@ def is_video_path(relpath: str) -> bool:
 
 
 def drive_url(file_id: str) -> str:
+    """单行直链格式。
+
+    与旧独立脚本 gen_strm_from_drive.py 一致的格式，85k 存量文件与新文件走
+    同一套解析（backend/emby_server/drive_auth.drive_api_media_url 统一转成
+    alt=media）。旧脚本不在仓库中，格式一致性基于存量文件实测确认。
+    """
     return "https://drive.google.com/uc?export=download&id=%s&confirm=t" % file_id
 
 
@@ -190,14 +224,41 @@ def _list_files_page(token: str, drive_id: str, query: str,
     return body.get("files", []), body.get("nextPageToken")
 
 
-def _resolve_dir_id(token: str, drive_id: str, dir_path: str) -> Optional[str]:
+def _page_fetcher(drive_id: str):
+    """返回一个带 401 自动刷新的一页抓取闭包 fetch(query, page_token)。
+
+    SA token 有效期约 1 小时：8.5 万文件的列举要发数千次 API，耗时很可能
+    超过 1 小时。原来 token 只在列举开始取一次，中途 401 整个列举作废；
+    现在遇到 PermissionError(401) 时刷新一次 token 续跑，仍失败才抛。
+    """
+    box = {"token": _get_token()}
+    if not box["token"]:
+        raise RuntimeError("无可用 SA 凭据，无法访问 Drive API")
+
+    def fetch(query: str, page_token: Optional[str] = None):
+        try:
+            return _list_files_page(box["token"], drive_id, query, page_token)
+        except PermissionError:
+            fresh = _get_token()
+            if not fresh or fresh == box["token"]:
+                raise
+            box["token"] = fresh
+            logger.info("strm_gen: Drive token 已刷新，继续列举")
+            return _list_files_page(fresh, drive_id, query, page_token)
+
+    return fetch
+
+
+def _resolve_dir_id(fetch, drive_id: str, dir_path: str) -> Optional[str]:
     """把 "MoviePilot/剧集" 这样的相对路径解析成 Drive folder ID。
 
-    逐级用 files.list 查 name + parents 定位。找不到返回 None。
+    逐级用 files.list 查 name + parents 定位，每级翻完所有页
+    （原来只读第一页：某级目录 >1000 条且目标文件夹排在后面时会误报找不到）。
+    找不到返回 None。
     """
     parts = [p for p in dir_path.strip("/").split("/") if p]
     if not parts:
-        return None  # 空 = 网盘根，不需要 ID（用 q 限定即可）
+        return None  # 空 = 网盘根，不需要 ID（用 parents 限定即可）
     parent_id: Optional[str] = None
     for part in parts:
         # 转义单引号
@@ -209,11 +270,19 @@ def _resolve_dir_id(token: str, drive_id: str, dir_path: str) -> Optional[str]:
         )
         if parent_id:
             q += f" and '{parent_id}' in parents"
-        files, _ = _list_files_page(token, drive_id, q)
-        if not files:
+        found = None
+        page_token: Optional[str] = None
+        while True:
+            files, page_token = fetch(q, page_token)
+            if files:
+                found = files[0]["id"]
+                break
+            if not page_token:
+                break
+        if not found:
             return None
         # 同名多个取第一个（与旧脚本 rclone 行为一致）
-        parent_id = files[0]["id"]
+        parent_id = found
     return parent_id
 
 
@@ -223,16 +292,25 @@ def iter_drive_videos(drive_id: str, dir_path: str):
     yield (root_relpath, file_id, size)。root_relpath 为相对网盘根路径。
     用 files.list 全量分页 + 递归子目录，避免 rclone 单次超长列举丢文件。
     """
-    token = _get_token()
-    if not token:
-        raise RuntimeError("无可用 SA 凭据，无法访问 Drive API")
-    dir_id = _resolve_dir_id(token, drive_id, dir_path)
+    fetch = _page_fetcher(drive_id)  # 内部已做 SA 凭据检查 + 401 自动刷新
+    dir_id = _resolve_dir_id(fetch, drive_id, dir_path)
     if dir_path and not dir_id:
         raise RuntimeError(f"Drive 上找不到源目录: {dir_path!r}")
 
+    # 共享盘根目录：'root' 别名只对个人盘有效，共享盘顶层用 '<driveId>' in parents。
+    # 原来无条件用 'root' in parents，共享盘配空源目录时列举结果恒为空（静默丢全部）。
+    is_root = not dir_path.strip("/")
+    root_parents_q = None
+    if is_root:
+        dc = _drive_modules()
+        try:
+            is_personal = dc._is_personal_drive_key(drive_id)
+        except Exception:
+            is_personal = False
+        root_parents_q = "'root' in parents" if is_personal else f"'{drive_id}' in parents"
+
     # BFS 遍历目录树
     # (folder_id, rel_prefix)
-    # 注意：folder_id 为 None 仅当 dir_path 为空（网盘根），此时用 'root' in parents
     stack: list[tuple[Optional[str], str]] = [(dir_id, "")]
     # 网盘根相对路径前缀：dir_path 本身
     root_prefix = dir_path.strip("/") + "/" if dir_path.strip("/") else ""
@@ -244,10 +322,10 @@ def iter_drive_videos(drive_id: str, dir_path: str):
             q = "trashed=false"
             if folder_id:
                 q += f" and '{folder_id}' in parents"
-            elif not dir_path.strip("/"):
+            elif root_parents_q:
                 # 网盘根：只列顶层（避免无 parents 限定导致的全盘重复列举）
-                q += " and 'root' in parents"
-            files, page_token = _list_files_page(token, drive_id, q, page_token)
+                q += f" and {root_parents_q}"
+            files, page_token = fetch(q, page_token)
             for f in files:
                 if f.get("trashed"):
                     continue
@@ -345,8 +423,46 @@ def _load_state() -> dict[str, tuple[str, int, str]]:
 
 
 def _save_state_rows(rows: list[tuple[str, str, int, str]]):
-    """批量 upsert 状态。rows: [(remote_path, file_id, size, strm_path)]。"""
+    """批量 upsert 状态。rows: [(remote_path, file_id, size, strm_path)]。
+
+    原来逐行 SELECT+add：8.5 万行 = 8.5 万次 point 查询。现在按批
+    "先删后插"（DELETE WHERE remote_path IN (...) + bulk_insert_mappings），
+    每批 2 条 SQL，与 PG/SQLite 都兼容。批内按 remote_path 去重保留最后一条。
+    """
     if not rows:
+        return
+    try:
+        from backend.emby_server import models as em
+        from backend.database import SessionLocal
+    except Exception:
+        return
+    # 批内去重：同 remote_path 保留最后一条（同目录同名文件的极限情况）
+    dedup: dict[str, tuple[str, str, int, str]] = {}
+    for r in rows:
+        dedup[r[0]] = r
+    rows = list(dedup.values())
+    sess = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        keys = [r[0] for r in rows]
+        sess.query(em.StrmGenFile).filter(
+            em.StrmGenFile.remote_path.in_(keys)).delete(synchronize_session=False)
+        sess.bulk_insert_mappings(em.StrmGenFile, [
+            {"remote_path": rp, "file_id": fid, "size": size,
+             "strm_path": sp, "updated_at": now}
+            for rp, fid, size, sp in rows
+        ])
+        sess.commit()
+    except Exception as exc:
+        sess.rollback()
+        logger.warning("strm_gen: 写状态表失败: %s", exc)
+    finally:
+        sess.close()
+
+
+def _delete_state_rows(remote_paths: list[str]):
+    """删除状态行（给 prune 用）。"""
+    if not remote_paths:
         return
     try:
         from backend.emby_server import models as em
@@ -355,23 +471,12 @@ def _save_state_rows(rows: list[tuple[str, str, int, str]]):
         return
     sess = SessionLocal()
     try:
-        now = datetime.now(timezone.utc)
-        for remote_path, file_id, size, strm_path in rows:
-            obj = sess.query(em.StrmGenFile).filter(
-                em.StrmGenFile.remote_path == remote_path).first()
-            if obj:
-                obj.file_id = file_id
-                obj.size = size
-                obj.strm_path = strm_path
-                obj.updated_at = now
-            else:
-                sess.add(em.StrmGenFile(
-                    remote_path=remote_path, file_id=file_id,
-                    size=size, strm_path=strm_path, updated_at=now))
+        sess.query(em.StrmGenFile).filter(
+            em.StrmGenFile.remote_path.in_(remote_paths)).delete(synchronize_session=False)
         sess.commit()
     except Exception as exc:
         sess.rollback()
-        logger.warning("strm_gen: 写状态表失败: %s", exc)
+        logger.warning("strm_gen: 删状态表失败: %s", exc)
     finally:
         sess.close()
 
@@ -400,65 +505,100 @@ def _resolve_collision(desired: str, used: set[str]) -> str:
     return f"{base}-{i}{ext}"
 
 
-def run_generation(db, full: bool = False, drive_id: Optional[str] = None) -> dict[str, Any]:
-    """执行一次生成。full=True 时忽略增量状态全量重建（仍以 file_id 去重）。
-
-    返回统计 dict。同一时间只允许一个任务运行。
-    """
+def _reset_progress():
+    """重置一次运行的进度计数（调用方已持有运行权）。"""
     with _lock:
-        if _progress["running"]:
-            return {"ok": False, "error": "已有生成任务在运行中"}
         _progress.update({
             "running": True, "phase": "listing",
             "started_at": datetime.now(timezone.utc).isoformat(),
             "finished_at": None, "total": 0, "done": 0,
-            "generated": 0, "skipped": 0, "failed": 0,
+            "generated": 0, "skipped": 0, "failed": 0, "pruned": 0,
             "errors": [], "current": "",
         })
 
-    stats = {"generated": 0, "skipped": 0, "failed": 0, "total": 0}
+
+def try_acquire() -> bool:
+    """原子尝试获取运行权：成功返回 True（已置 running），失败返回 False。
+
+    给管理后台手动触发用——原来是"查 running → 起线程 → 线程里再置 running"，
+    锁在起线程前就释放了，快速连点两次都会返回"已开始"，第二次被静默吞掉。
+    现在获取与置位在同一把锁内完成，无竞态。
+    """
+    with _lock:
+        if _progress["running"]:
+            return False
+        _progress["running"] = True
+        return True
+
+
+def _release_progress(stats: dict, db):
+    """释放运行权：phase 复位 + 落盘上次执行统计。"""
+    with _lock:
+        # 非预期异常时 phase 可能卡在 generating：统一收敛到 error，
+        # 前端不会一直显示"生成中"但实际已停。
+        if _progress.get("phase") not in ("done", "idle"):
+            _progress["phase"] = "error"
+        _progress["running"] = False
+        _progress["finished_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        from backend.integrations import store
+        # 注意：store 只有 write_values（批量写），没有 set_value；
+        # 且 write_values 不自动提交，提交时机由调用方决定。
+        store.write_values(db, {
+            CONFIG_LAST_RUN: datetime.now(timezone.utc).isoformat(),
+            CONFIG_LAST_STATS: json.dumps(stats, ensure_ascii=False),
+        }, {
+            CONFIG_LAST_RUN: ".strm 生成器上次执行完成时间",
+            CONFIG_LAST_STATS: ".strm 生成器上次执行统计",
+        })
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+def run_generation(db, full: bool = False, drive_id: Optional[str] = None) -> dict[str, Any]:
+    """执行一次生成。full=True 时忽略增量状态全量重建（仍以 file_id 去重）。
+
+    drive_id=None 时遍历所有发现的共享盘；指定则只跑那一个盘。
+    同一时间只允许一个任务运行（原子获取，见 try_acquire）。
+    返回统计 dict。
+    """
+    if not try_acquire():
+        return {"ok": False, "error": "已有生成任务在运行中"}
+    return run_owned(db, full=full, drive_id=drive_id)
+
+
+def run_owned(db, full: bool = False, drive_id: Optional[str] = None) -> dict[str, Any]:
+    """已持有运行权时执行一次生成（try_acquire 成功后调用）。"""
+    _reset_progress()
+    stats = {"generated": 0, "skipped": 0, "failed": 0, "pruned": 0, "total": 0}
     try:
         return _run_generation_inner(db, full, drive_id, stats)
     finally:
-        _set_progress(running=False, finished_at=datetime.now(timezone.utc).isoformat())
-        # 落盘上次执行统计
-        try:
-            from backend.integrations import store
-            store.set_value(db, CONFIG_LAST_RUN, datetime.now(timezone.utc).isoformat())
-            store.set_value(db, CONFIG_LAST_STATS, json.dumps(stats, ensure_ascii=False))
-        except Exception:
-            pass
+        _release_progress(stats, db)
 
 
 def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) -> dict[str, Any]:
     src_prefix = source_dir(db)
     strm_root = _container_strm_root(db)
 
-    # 确定 drive_id：未指定时用第一个发现的共享盘
-    if not drive_id:
+    # 确定要跑的盘：未指定时遍历所有发现的共享盘（原来只取第一个，
+    # 多共享盘用户其余盘的文件永远不生成且无任何提示）。
+    if drive_id:
+        drive_ids = [drive_id]
+    else:
         drives = _discover_drives()
         if not drives:
             _set_progress(phase="error")
             _add_error("未发现可用 Drive（共享盘）")
             return {"ok": False, "error": "未发现可用 Drive"}
-        drive_id = sorted(drives.keys())[0]
-    logger.info("strm_gen: 开始生成 drive=%s src=%s full=%s", drive_id, src_prefix, full)
-
-    # 1. 列举
-    _set_progress(phase="listing", current="正在列举 Drive 文件…")
-    videos: list[tuple[str, str, int]] = []
-    try:
-        for rel, fid, size in iter_drive_videos(drive_id, src_prefix):
-            videos.append((rel, fid, size))
-    except Exception as exc:
-        _set_progress(phase="error")
-        _add_error(f"列举失败: {exc}")
-        return {"ok": False, "error": str(exc)}
-    stats["total"] = len(videos)
-    _set_progress(total=len(videos), phase="generating")
-    logger.info("strm_gen: 列举到 %d 个视频文件", len(videos))
-
-    # 2. 增量比对 + 生成
+        drive_ids = sorted(drives.keys())
+        if len(drive_ids) > 1:
+            logger.info("strm_gen: 发现 %d 个共享盘，逐个生成: %s", len(drive_ids), drive_ids)
+    # 增量状态与已用路径在各盘之间共享（_resolve_collision 跨盘防撞车）
     state = {} if full else _load_state()
     used: set[str] = set()
     if full:
@@ -470,44 +610,90 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
                     used.add(os.path.relpath(_full, strm_root))
     else:
         used = {spath for (_fid, _size, spath) in state.values()}
-    pending_rows: list[tuple[str, str, int, str]] = []
 
-    for idx, (rel, fid, size) in enumerate(videos):
-        _set_progress(done=idx + 1, current=rel)
-        old = state.get(rel)
-        if old and old[0] == fid and not full:
-            spath = os.path.join(strm_root, old[2])
-            if os.path.exists(spath):
-                stats["skipped"] += 1
-                _set_progress(skipped=stats["skipped"])
-                continue
-            strm_rel = old[2]  # .strm 被删了，按原路径重建
-        else:
-            strm_rel = _resolve_collision(strm_relpath(rel, src_prefix), used)
+    all_videos: list[tuple[str, str, int]] = []
+    for did in drive_ids:
+        logger.info("strm_gen: 开始生成 drive=%s src=%s full=%s", did, src_prefix, full)
+        # 1. 列举
+        _set_progress(phase="listing", current=f"正在列举 Drive 文件…（{did}）")
+        videos: list[tuple[str, str, int]] = []
+        try:
+            for rel, fid, size in iter_drive_videos(did, src_prefix):
+                videos.append((rel, fid, size))
+        except Exception as exc:
+            _set_progress(phase="error")
+            _add_error(f"列举失败 [{did}]: {exc}")
+            return {"ok": False, "error": str(exc)}
+        logger.info("strm_gen: drive=%s 列举到 %d 个视频文件", did, len(videos))
+        all_videos.extend(videos)
 
-        url = drive_url(fid)
-        full_path = os.path.join(strm_root, strm_rel)
-        if _write_strm_file(full_path, url):
-            used.add(strm_rel)
-            pending_rows.append((rel, fid, size, strm_rel))
-            state[rel] = (fid, size, strm_rel)
-            stats["generated"] += 1
-        else:
-            stats["failed"] += 1
-            _add_error(f"写入失败: {strm_rel}")
-        _set_progress(generated=stats["generated"], failed=stats["failed"])
+        # 2. 增量比对 + 生成
+        _set_progress(phase="generating", total=len(all_videos))
+        pending_rows: list[tuple[str, str, int, str]] = []
+        done = get_progress()["done"]
+        for rel, fid, size in videos:
+            done += 1
+            _set_progress(done=done, current=rel)
+            old = state.get(rel)
+            # file_id 或 size 任一变化都重建（Drive 上替换文件换 file_id，原地覆盖只变 size；
+            # 原来只比 file_id，size 字段存而不用）
+            if old and old[0] == fid and old[1] == size and not full:
+                spath = os.path.join(strm_root, old[2])
+                if os.path.exists(spath):
+                    stats["skipped"] += 1
+                    _set_progress(skipped=stats["skipped"])
+                    continue
+                strm_rel = old[2]  # .strm 被删了，按原路径重建
+            else:
+                strm_rel = _resolve_collision(strm_relpath(rel, src_prefix), used)
 
-        # 每 500 条落盘一次，避免中途崩溃全丢
-        if len(pending_rows) >= 500:
+            url = drive_url(fid)
+            full_path = os.path.join(strm_root, strm_rel)
+            if _write_strm_file(full_path, url):
+                used.add(strm_rel)
+                pending_rows.append((rel, fid, size, strm_rel))
+                state[rel] = (fid, size, strm_rel)
+                stats["generated"] += 1
+            else:
+                stats["failed"] += 1
+                _add_error(f"写入失败: {strm_rel}")
+            _set_progress(generated=stats["generated"], failed=stats["failed"])
+
+            # 每 500 条落盘一次，避免中途崩溃全丢
+            if len(pending_rows) >= 500:
+                _save_state_rows(pending_rows)
+                pending_rows = []
+        if pending_rows:
             _save_state_rows(pending_rows)
-            pending_rows = []
-    if pending_rows:
-        _save_state_rows(pending_rows)
 
-    # 3. 完整性校验：按顶层目录统计 Drive vs .strm
+    stats["total"] = len(all_videos)
+    _set_progress(total=len(all_videos))
+
+    # 3. 完整性校验：按顶层目录统计 Drive vs .strm（校验磁盘真实存在，
+    # 原来只比"Drive 枚举 vs DB"，DB 有行但文件被删会误报完整）
     _set_progress(phase="verifying", current="正在校验完整性…")
-    verify = _verify_completeness(videos, state, src_prefix)
+    verify = _verify_completeness(all_videos, state, src_prefix, strm_root=strm_root)
     stats["verify"] = verify
+
+    # 4. 清理 Drive 上已不存在的条目（默认关闭，只上报不删）。
+    # 多盘时跳过：A 盘删掉的文件在 B 盘可能还存在，跨盘无法判定。
+    if prune_enabled(db):
+        if len(drive_ids) == 1:
+            seen = {rel for rel, _fid, _size in all_videos}
+            stale = [rel for rel in state if rel not in seen]
+            for rel in stale:
+                spath = os.path.join(strm_root, state[rel][2])
+                try:
+                    if os.path.exists(spath):
+                        os.remove(spath)
+                except OSError as exc:
+                    logger.warning("strm_gen: 删除过期 .strm 失败 %s: %s", spath, exc)
+                del state[rel]
+            _delete_state_rows(stale)
+            stats["pruned"] = len(stale)
+            logger.info("strm_gen: 清理过期条目 %d 个", len(stale))
+        else:
+            logger.info("strm_gen: 多盘模式跳过清理（跨盘无法判定过期）")
 
     _set_progress(phase="done", current="")
     logger.info("strm_gen: 完成 %s", stats)
@@ -516,12 +702,16 @@ def _run_generation_inner(db, full: bool, drive_id: Optional[str], stats: dict) 
 
 def _verify_completeness(videos: list[tuple[str, str, int]],
                          state: dict[str, tuple[str, int, str]],
-                         src_prefix: str) -> dict[str, Any]:
+                         src_prefix: str,
+                         strm_root: Optional[str] = None) -> dict[str, Any]:
     """按目录（季级别）比对 Drive 文件数 vs 已生成 .strm 数。
 
     分组键为视频文件所在的父目录（如 "剧集/动漫/妖神记 (2017)/Season 1"），
     缺集通常发生在同一季内。返回 {total_series, complete_series,
     incomplete: [{series, drive_count, strm_count, missing}]}。
+
+    strm_root 传入时还会校验 .strm 文件真实存在于磁盘（原来只比
+    "Drive 枚举 vs DB"，DB 有行但文件被删会误报完整）。
     """
     from collections import Counter
 
@@ -529,6 +719,11 @@ def _verify_completeness(videos: list[tuple[str, str, int]],
         short = rel[len(src_prefix):] if src_prefix and rel.startswith(src_prefix) else rel
         parent = os.path.dirname(short)
         return parent or short
+
+    def _strm_exists(spath: str) -> bool:
+        if strm_root is None:
+            return True
+        return os.path.exists(os.path.join(strm_root, spath))
 
     drive_counter: Counter[str] = Counter()
     drive_files: dict[str, set[str]] = {}
@@ -538,7 +733,9 @@ def _verify_completeness(videos: list[tuple[str, str, int]],
         drive_files.setdefault(g, set()).add(rel)
     strm_counter: Counter[str] = Counter()
     strm_files: dict[str, set[str]] = {}
-    for rel in state.keys():
+    for rel, (_fid, _size, spath) in state.items():
+        if not _strm_exists(spath):
+            continue
         g = _group(rel)
         strm_counter[g] += 1
         strm_files.setdefault(g, set()).add(rel)
@@ -597,8 +794,30 @@ _scheduler_started = False
 _scheduler_lock = threading.Lock()
 
 
+def _last_run_date_from_config() -> str:
+    """从 strm_gen_last_run 配置恢复上次执行日期（进程重启后不重复跑当天）。
+
+    原来 last_run_date 是纯内存变量：进程重启后若已过当天执行时刻会再跑一次；
+    而 run_generation 本来就会写 strm_gen_last_run（只写不读），现在把它读回来。
+    """
+    try:
+        from backend.database import SessionLocal
+        from backend.integrations import store
+        db = SessionLocal()
+        try:
+            raw = store.get_value(db, CONFIG_LAST_RUN, "") or ""
+            # ISO 格式 "2026-10-10T12:34:56+00:00" 取日期部分
+            return raw[:10] if len(raw) >= 10 and raw[4] == "-" else ""
+        finally:
+            db.close()
+    except Exception:
+        return ""
+
+
 def _scheduler_loop():
-    last_run_date = ""
+    last_run_date = _last_run_date_from_config()
+    if last_run_date:
+        logger.info("strm_gen: 从配置恢复上次执行日期 %s", last_run_date)
     while True:
         try:
             from backend.database import SessionLocal
