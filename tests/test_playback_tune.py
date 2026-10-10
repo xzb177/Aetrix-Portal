@@ -1,10 +1,9 @@
 """开箱即用播放优化的回归测试。
 
-覆盖 backend/emby_server/playback_tune.py 的四个能力：
+覆盖 backend/emby_server/playback_tune.py 的三个能力：
 1. rclone 挂载参数默认值
 2. SA 自动轮换
 3. 单文件并发 Range 限流
-4. 移动端 4K 透明降级
 """
 import configparser
 import threading
@@ -182,82 +181,3 @@ def test_range_limiter_threaded():
     assert len(entered) == 6
     assert time.monotonic() - t0 >= 0.35
 
-
-# ---------------------------------------------------------------- 4. 移动端降级
-def test_is_mobile_client():
-    assert pt.is_mobile_client("SenPlayer/1.0 iOS") is True
-    assert pt.is_mobile_client("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)") is True
-    assert pt.is_mobile_client("VidHub/2.0 Android") is True
-    assert pt.is_mobile_client("Mozilla/5.0 (Windows NT 10.0)") is False
-    assert pt.is_mobile_client("") is False
-    assert pt.is_mobile_client(None) is False
-
-
-class _FakeItem:
-    def __init__(self, **kw):
-        self.id = kw.get("id", 1)
-        self.guid = kw.get("guid", "g1")
-        self.name = kw.get("name", "Test Movie")
-        self.library_id = kw.get("library_id", 1)
-        self.item_type = kw.get("item_type", "movie")
-        self.height = kw.get("height")
-        self.tmdb_id = kw.get("tmdb_id")
-        self.production_year = kw.get("production_year", 2024)
-
-
-class _FakeQuery:
-    def __init__(self, items):
-        self._items = items
-
-    def filter(self, *a, **k):
-        return self
-
-    def order_by(self, *a):
-        return self
-
-    def limit(self, n):
-        return self
-
-    def first(self):
-        return self._items[0] if self._items else None
-
-    def all(self):
-        return self._items
-
-
-class _FakeDB:
-    def __init__(self, items):
-        self._items = items
-
-    def query(self, *a, **k):
-        return _FakeQuery(self._items)
-
-
-def test_downgrade_skips_non_mobile():
-    item = _FakeItem(height=2160)
-    db = _FakeDB([_FakeItem(height=1080)])
-    out = pt.maybe_downgrade_for_client(
-        item, "Mozilla/5.0 (Windows NT 10.0)", db)
-    assert out is item
-
-
-def test_downgrade_skips_non_4k():
-    item = _FakeItem(height=1080)
-    db = _FakeDB([_FakeItem(height=720)])
-    out = pt.maybe_downgrade_for_client(item, "SenPlayer/1.0", db)
-    assert out is item
-
-
-def test_downgrade_picks_1080p_for_mobile_4k():
-    item = _FakeItem(height=2160, tmdb_id="123")
-    small = _FakeItem(id=2, height=1080, tmdb_id="123")
-    db = _FakeDB([small])
-    out = pt.maybe_downgrade_for_client(item, "SenPlayer iOS", db)
-    assert out is small
-
-
-def test_downgrade_no_candidate_returns_original():
-    item = _FakeItem(height=2160, tmdb_id="123")
-    db = _FakeDB([])
-    out = pt.maybe_downgrade_for_client(item, "SenPlayer iOS", db)
-    assert out is item
