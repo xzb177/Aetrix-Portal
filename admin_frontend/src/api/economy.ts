@@ -342,6 +342,25 @@ export const fetchEconomySettings = () => get<{ settings: EconomySettings }>('/e
 export const updateEconomySettings = (settings: EconomySettings) =>
   put<{ success: boolean; changed: string[] }>('/economy/settings', { settings })
 
+// ==================== 防盗链（v2.52.0） ====================
+// 后端：backend/api/admin_economy.py（/api/admin/hotlink-config）
+// 配置读取唯一实现：backend/emby_server/play_sign.py
+
+export interface HotlinkConfigPayload {
+  enabled: boolean
+  play_sign_ttl: number
+  strm_sig_ttl: number
+}
+
+export interface HotlinkConfig extends HotlinkConfigPayload {
+  defaults: { enabled: boolean; play_sign_ttl: number; strm_sig_ttl: number }
+}
+
+export const fetchHotlinkConfig = () => get<HotlinkConfig>('/hotlink-config')
+
+export const updateHotlinkConfig = (payload: HotlinkConfigPayload) =>
+  put<HotlinkConfig>('/hotlink-config', payload)
+
 // ==================== 到期续费提醒（v2.8.0） ====================
 // 后端：backend/api/reminders_admin.py + backend/reminders.py
 

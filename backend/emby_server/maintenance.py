@@ -21,6 +21,7 @@ import logging
 import os
 import shutil
 import threading
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -500,6 +501,119 @@ def optimize_query_plans(db: Session) -> bool:
         return False
 
 
+# .strm 签名刷新：节流间隔（秒，默认 3000 = 50 分钟）与上次运行时间记录文件。
+# .strm 内容签名 1 小时过期（见 strm_sign），janitor 每 600 秒跑一轮，这里按
+# "上次运行"节流——50 分钟未到直接返回，不重复扫盘。
+STRM_REFRESH_INTERVAL_SECONDS = max(600, int(os.getenv("STRM_REFRESH_INTERVAL_SECONDS", "3000") or 3000))
+STRM_REFRESH_LAST_FILE = "/tmp/strm_sig_refresh.last"
+
+
+def strm_sig_refresh_tick() -> dict:
+    """刷新 .strm 文件签名（节流 50 分钟）：只重签 needs_refresh 的文件。
+
+    - legacy（无签名）→ 补签名；ok 但剩余有效期 < 600 秒 → 重签；
+      bad（签名损坏/过期）→ 跳过计数，不删除不重写，等人工处理。
+    - 只读前 4KB 判断（签名只在第一行），超 4KB 的文件重签时才读全文，
+      其余行（注释/空行）原样保留；写入走 tmp + os.replace 原子替换。
+    - 单个文件异常隔离（记 debug、计数 errors），不影响整轮。
+    - 永不抛异常：janitor 是后台线程，一次维护失败不能把整轮拖死。
+    """
+    started = time.time()
+    now = time.time()
+    refreshed = 0
+    skipped_files = 0
+    bad_files = 0
+    errors = 0
+
+    # 1) 节流：上次运行时间（读不到/非法视为从未运行）
+    try:
+        with open(STRM_REFRESH_LAST_FILE, "r", encoding="utf-8") as f:
+            last = float(f.read().strip())
+    except (OSError, ValueError):
+        last = 0.0
+    if now - last < STRM_REFRESH_INTERVAL_SECONDS:
+        return {"skipped": True, "reason": "interval"}
+
+    # 2) .strm 目录（部署侧环境变量，与 docker 挂载点一致；不读 DB）
+    strm_dir = os.getenv("STRM_CONTAINER_PATH", "/strm")
+    if not os.path.isdir(strm_dir):
+        logger.info("strm_sig_refresh: .strm 目录不存在，跳过: %s", strm_dir)
+        return {"skipped": True, "reason": "no_dir"}
+
+    # 3) 延迟 import，避免顶层循环导入
+    from backend.emby_server.mounts import strm_url as _first_strm_url
+    from backend.emby_server.strm_sign import needs_refresh, sign_strm_url
+
+    def _replace_first_url(text: str, signed: str, first_url: str) -> str:
+        """把文本中第一行有效 URL 替换为签名后的 URL，其余行（含注释/空行/BOM）原样保留。"""
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            if line.replace("\ufeff", "").strip() == first_url:
+                lines[i] = signed
+                break
+        return "\n".join(lines)
+
+    # 4) 全量 walk：.strm 文件（大小写不敏感后缀）；只读前 4KB 判断
+    for root, _dirs, files in os.walk(strm_dir):
+        for fname in files:
+            if not fname.lower().endswith(".strm"):
+                continue
+            path = os.path.join(root, fname)
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    head = f.read(4096)
+                if not head.strip():
+                    skipped_files += 1
+                    continue
+                if not needs_refresh(head):
+                    skipped_files += 1
+                    continue
+                # 首个有效 URL 行（跳过 BOM/注释/空行，与 mounts.strm_url 同语义）
+                first_url = _first_strm_url(head)
+                if not first_url:
+                    skipped_files += 1
+                    continue
+                signed = sign_strm_url(first_url)
+                if not signed or signed == first_url:
+                    # 极端情况（空串/签名无变化）：不重写，记 bad 备查
+                    bad_files += 1
+                    continue
+                if len(head) >= 4096:
+                    # 罕见：文件超过 4KB，重读全文再替换（其余行原样保留）
+                    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                        full = f.read()
+                    new_text = _replace_first_url(full, signed, first_url)
+                else:
+                    new_text = _replace_first_url(head, signed, first_url)
+                tmp_path = path + ".tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    f.write(new_text)
+                os.replace(tmp_path, path)
+                refreshed += 1
+            except Exception:  # noqa: BLE001 — 单个文件异常隔离
+                logger.debug("strm_sig_refresh: 处理文件失败 %s", path, exc_info=True)
+                errors += 1
+                continue
+
+    # 5) 记录本次运行时间（写失败只记 warning）
+    try:
+        with open(STRM_REFRESH_LAST_FILE, "w", encoding="utf-8") as f:
+            f.write(str(int(now)))
+    except OSError:
+        logger.warning("strm_sig_refresh: 上次运行时间写入失败 %s", STRM_REFRESH_LAST_FILE)
+
+    # 6) 汇总
+    result = {
+        "refreshed": refreshed,
+        "skipped_files": skipped_files,
+        "bad_files": bad_files,
+        "errors": errors,
+        "duration_s": round(time.time() - started, 3),
+    }
+    logger.info("strm_sig_refresh: %s", result)
+    return result
+
+
 def janitor_tick() -> dict:
     """一次维护动作（启动后由后台线程按 MAINTENANCE_INTERVAL 周期执行）"""
     from backend.database import SessionLocal
@@ -651,6 +765,12 @@ def janitor_tick() -> dict:
         result["idle_gc_done"] = bool(_idle_gc_if_quiet())
     except Exception as exc:  # noqa: BLE001
         logger.warning("空闲 GC 失败: %s", exc)
+    # .strm 签名刷新（内部按 50 分钟节流；异常隔离，不影响整轮维护）
+    try:
+        result["strm_sig_refresh"] = strm_sig_refresh_tick()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(".strm 签名刷新失败: %s", exc)
+        result["strm_sig_refresh"] = {"skipped": True, "reason": "error"}
     return result
 
 

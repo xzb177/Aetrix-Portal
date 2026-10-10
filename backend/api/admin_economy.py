@@ -298,6 +298,50 @@ def economy_update_settings(
     return {"success": True, "changed": list(changed.keys())}
 
 
+# ---------- 防盗链（.strm 签名 + 播放签名，见 backend/emby_server/play_sign.py） ----------
+
+class HotlinkConfigRequest(BaseModel):
+    enabled: bool = True
+    play_sign_ttl: int = 900
+    strm_sig_ttl: int = 3600
+
+
+@admin_router.get("/hotlink-config")
+def hotlink_get_config(
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """防盗链配置读取：总开关 + 播放签名 TTL + .strm 签名 TTL（含默认值）。"""
+    from backend.emby_server import play_sign
+
+    return play_sign.config_payload(db)
+
+
+@admin_router.put("/hotlink-config")
+def hotlink_update_config(
+    request: HotlinkConfigRequest,
+    current_admin: models.WebUser = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """防盗链配置写入：范围非法时 400（中文信息），写完即失效热缓存。"""
+    from backend.emby_server import play_sign
+
+    try:
+        result = play_sign.write_config(
+            db,
+            enabled=request.enabled,
+            play_sign_ttl=request.play_sign_ttl,
+            strm_sig_ttl=request.strm_sig_ttl,
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _audit(db, current_admin, "hotlink_update_config", "system", None,
+           {"enabled": request.enabled, "play_sign_ttl": request.play_sign_ttl,
+            "strm_sig_ttl": request.strm_sig_ttl})
+    db.commit()
+    return result
+
+
 # ---------- 经济统计 ----------
 
 @admin_router.get("/economy/stats")

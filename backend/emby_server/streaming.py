@@ -70,10 +70,27 @@ def _redirect_headers(forward: dict, from_url: str, to_url: str) -> dict:
     WebDAV 的 Basic / 115 的 Cookie 是发给**源站**的；源站回一个 302 指向第三方主机时
     httpx 会把同样的头带过去——等于把凭据交给重定向目标。同主机（含换端口以外的同站）
     保留，跨主机一律剥掉。
+
+    Drive 例外：Drive 文件保持私有，服务端用 SA 的 Bearer token 拉流；Google 下载链
+    常在 Drive 域名之间跳转（drive.google.com → drive.usercontent.google.com），
+    目标仍在 Drive 域名白名单内时保留 ``Authorization``（其余凭据头照剥），
+    否则 token 会在跳转时丢失、私有文件拉流失败。
     """
     same_host = urlsplit(from_url).hostname == urlsplit(to_url).hostname
     if same_host:
         return forward
+    to_host = (urlsplit(to_url).hostname or "").lower()
+    try:
+        # 延迟导入：drive_auth 只依赖标准库 + drive_changes，无循环导入风险；
+        # 但 streaming 是播放热路径，异常时退回原逻辑（全剥）。
+        from backend.emby_server.drive_auth import DRIVE_HOSTS
+        drive_hosts: frozenset = DRIVE_HOSTS
+    except Exception:  # noqa: BLE001
+        drive_hosts = frozenset()
+    if to_host in drive_hosts:
+        # 只保留 authorization（SA Bearer token），cookie / proxy-authorization 照剥
+        return {k: v for k, v in forward.items()
+                if k.lower() == "authorization" or k.lower() not in _CREDENTIAL_HEADERS}
     return {k: v for k, v in forward.items() if k.lower() not in _CREDENTIAL_HEADERS}
 
 

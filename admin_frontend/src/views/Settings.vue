@@ -36,6 +36,9 @@ import { useQueryFilter } from '@/composables/useQueryFilter'
 import { useDangerOps, fmtBytes } from '@/composables/useDangerOps'
 import { fetchEconomySettings, updateEconomySettings, type EconomySettings } from '@/api/economy'
 import {
+  fetchHotlinkConfig, updateHotlinkConfig, type HotlinkConfigPayload,
+} from '@/api/economy'
+import {
   fetchCapabilities, fetchCapability, saveCapability, testCapability,
   type CapabilityCard, type CapabilityField, type CapabilityTestResult,
 } from '@/api/capabilities'
@@ -470,8 +473,66 @@ async function load() {
 }
 
 onMounted(async () => {
-  await Promise.all([load(), loadCapabilities()])
+  await Promise.all([load(), loadCapabilities(), loadHotlink()])
 })
+
+/** ==================== 防盗链卡片（独立 endpoint，非通用分组） ==================== */
+/** 用独立接口而非 GROUPS 通用分组：TTL 需要前后端双重范围校验（60~86400 / 300~86400），
+ * 通用分组的 int 字段只有 min=0 的粗校验，装不下。 */
+const hotlink = reactive({ enabled: true, play_sign_ttl: 900, strm_sig_ttl: 3600 })
+const hotlinkOriginal = reactive({ enabled: true, play_sign_ttl: 900, strm_sig_ttl: 3600 })
+const hotlinkLoading = ref(false)
+const hotlinkSaving = ref(false)
+
+function applyHotlink(data: { enabled: boolean; play_sign_ttl: number; strm_sig_ttl: number }) {
+  hotlink.enabled = !!data.enabled
+  hotlink.play_sign_ttl = Number(data.play_sign_ttl) || 900
+  hotlink.strm_sig_ttl = Number(data.strm_sig_ttl) || 3600
+  Object.assign(hotlinkOriginal, hotlink)
+}
+
+async function loadHotlink() {
+  hotlinkLoading.value = true
+  try {
+    applyHotlink(await fetchHotlinkConfig())
+  } catch {
+    // 错误提示由 HTTP 拦截器统一处理
+  } finally {
+    hotlinkLoading.value = false
+  }
+}
+
+const hotlinkDirty = computed(() =>
+  hotlink.enabled !== hotlinkOriginal.enabled
+  || hotlink.play_sign_ttl !== hotlinkOriginal.play_sign_ttl
+  || hotlink.strm_sig_ttl !== hotlinkOriginal.strm_sig_ttl,
+)
+
+async function saveHotlink() {
+  // 前端先行校验：与后端 play_sign.write_config 的范围保持一致
+  if (!Number.isInteger(hotlink.play_sign_ttl) || hotlink.play_sign_ttl < 60 || hotlink.play_sign_ttl > 86400) {
+    ElMessage.error('播放签名有效期需在 60~86400 秒之间')
+    return
+  }
+  if (!Number.isInteger(hotlink.strm_sig_ttl) || hotlink.strm_sig_ttl < 300 || hotlink.strm_sig_ttl > 86400) {
+    ElMessage.error('.strm 签名有效期需在 300~86400 秒之间')
+    return
+  }
+  const payload: HotlinkConfigPayload = {
+    enabled: hotlink.enabled,
+    play_sign_ttl: hotlink.play_sign_ttl,
+    strm_sig_ttl: hotlink.strm_sig_ttl,
+  }
+  hotlinkSaving.value = true
+  try {
+    applyHotlink(await updateHotlinkConfig(payload))
+    ElMessage.success('「防盗链」已保存')
+  } catch {
+    // 拦截器已提示
+  } finally {
+    hotlinkSaving.value = false
+  }
+}
 
 /** 运营参数页签顶部的分组跳转：分组多（8 块），先看目录再定位，不用一路滚 */
 function scrollToGroup(id: string) {
@@ -482,6 +543,7 @@ function scrollToGroup(id: string) {
 function reloadAll() {
   loadCapabilities()
   load()
+  loadHotlink()
   if (tab.value === 'danger') loadDanger()
 }
 
@@ -869,6 +931,76 @@ watch(
                   @click="saveGroup(g)"
                 >
                   <Save :size="14" class="btn-ico" />保存{{ g.title }}
+                </el-button>
+              </div>
+            </template>
+          </SectionCard>
+
+          <!-- 防盗链：独立卡片（TTL 需要范围校验，走独立 endpoint） -->
+          <SectionCard
+            id="group-hotlink"
+            title="防盗链"
+            :icon="ShieldCheck"
+            description="播放签名校验总开关 + 签名有效期。.strm 文件内容带签名（1 小时过期、定时任务自动刷新），Drive 文件保持私有、服务端用 SA 凭据中转拉流。"
+            :tone="hotlinkDirty ? 'accent' : 'default'"
+            class="group-card"
+          >
+            <template v-if="hotlinkDirty" #actions>
+              <span class="au-badge au-badge-amber">未保存</span>
+            </template>
+
+            <el-form label-position="top" class="field-form field-grid">
+              <el-form-item label="启用防盗链">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-switch v-model="hotlink.enabled" />
+                  </div>
+                  <span class="field-hint">关闭后播放端点跳过播放签名校验（兼容老客户端）</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="播放签名有效期">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="hotlink.play_sign_ttl"
+                      :min="60"
+                      :max="86400"
+                      :step="60"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">秒</span>
+                  </div>
+                  <span class="field-hint">uid/exp/sign 签名有效期，默认 900（15 分钟），范围 60~86400</span>
+                </div>
+              </el-form-item>
+              <el-form-item label=".strm 签名有效期">
+                <div class="field-stack">
+                  <div class="field-control">
+                    <el-input-number
+                      v-model="hotlink.strm_sig_ttl"
+                      :min="300"
+                      :max="86400"
+                      :step="60"
+                      controls-position="right"
+                      class="num-input"
+                    />
+                    <span class="field-suffix">秒</span>
+                  </div>
+                  <span class="field-hint">.strm 内容签名有效期，默认 3600（1 小时），范围 300~86400；定时任务每 50 分钟自动刷新</span>
+                </div>
+              </el-form-item>
+            </el-form>
+
+            <template #footer>
+              <div class="card-footer">
+                <el-button
+                  type="primary"
+                  :disabled="!hotlinkDirty"
+                  :loading="hotlinkSaving"
+                  @click="saveHotlink"
+                >
+                  <Save :size="14" class="btn-ico" />保存防盗链
                 </el-button>
               </div>
             </template>
