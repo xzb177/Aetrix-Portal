@@ -349,7 +349,6 @@ def _drain_loop(stop: threading.Event) -> None:
 
 def _watch_now(library_id: int, paths: tuple[str, ...]) -> None:
     """给一个库建立/刷新监听；失败只降级不抛"""
-    global _OBSERVER
     with _STATE_LOCK:
         observer = _OBSERVER
         unwatch = _WATCHES.pop(library_id, None)

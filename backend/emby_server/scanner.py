@@ -3878,7 +3878,6 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                     stats, failed_roots):
                     full_path = scan_file.stored_path
                     fname = scan_file.name
-                    dirpath = scan_file.local_dir
                     guid = _pending.guid
                     parsed = _pending.parsed
 
