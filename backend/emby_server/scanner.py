@@ -39,14 +39,36 @@ from backend.emby_server import scan_progress as progress
 
 # TMDB 刮削客户端已拆到 tmdb.py：扫描器只管遍历与写库，网络客户端（密钥轮询 + 短 TTL 缓存）
 # 单独成模块。这里重新导出一次，`scanner.tmdb_client` / `scanner.TmdbClient` 等既有引用不变。
+#
+# 注意：`tmdb_client` 故意**不**在这里 import。`from x import tmdb_client` 会在 scanner 首次
+# 导入时把对象快照进本模块命名空间，之后 `tmdb.tmdb_client` 被替换（例如测试里的
+# mock.patch）时，scanner 仍持有旧对象；曾导致 patch 窗口内首次导入 scanner 的场景把 mock
+# 泄漏到后续所有 `scanner._tmdb_work` 调用，`tests/test_enrich_worker.py` 全量跑时 flaky。
+# 因此内部统一走下面的 `_tmdb.tmdb_client` 活引用；外部 `scanner.tmdb_client` 引用由
+# PEP 562 的模块级 __getattr__ 兼容，见下方定义。
 from backend.emby_server.tmdb import (  # noqa: F401
     TMDB_API,
     TMDB_IMAGE,
     TMDB_LANG,
     TmdbClient,
     prewarm_images,
-    tmdb_client,
 )
+# 模块别名（活引用）：内部统一用 `_tmdb.tmdb_client`，不要 `from tmdb import tmdb_client`
+from backend.emby_server import tmdb as _tmdb
+
+
+def __getattr__(name: str):
+    """PEP 562 模块属性兜底（紧跟上面的 import 块）。
+
+    只为兼容外部的 `scanner.tmdb_client` 引用（属性访问 / `from scanner import tmdb_client`）：
+    每次访问都返回 `backend.emby_server.tmdb.tmdb_client` 的当前值。
+    本模块内部统一走上面的 `_tmdb.tmdb_client`（模块 `__getattr__` 不参与模块内部的
+    全局名查找，内部直接写裸名会 NameError）。
+    其余名字保持标准的 AttributeError 行为。
+    """
+    if name == "tmdb_client":
+        return _tmdb.tmdb_client
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # 外挂字幕的同名判定与语言识别已拆到 subtitle_match.py（本机与远程挂载共用同一份实现；
 # 注意别与负责字幕**投递**的 subtitles.py 搞混）。同样重新导出，
@@ -2108,12 +2130,12 @@ def _can_skip_file(ctx: "_ScanContext", item, pending: "_Pending", fingerprint: 
     # 另外只有**电影 / 剧集**参与刮削（写库循环里是 item_type in ("series", "movie")）：
     # 集与季根本没有 tmdb_id，`should_scrape` 对它们恒等于「缺元数据 → 要刮」，落到这里就是
     # 「配了 TMDB 的剧集库每轮重扫都得完整处理每一集」——增量扫描对这个最常见的库型等于关掉。
-    if tmdb_client.configured and pending.item_type in ("series", "movie"):
+    if _tmdb.tmdb_client.configured and pending.item_type in ("series", "movie"):
         if should_scrape(item, ctx.snap.scrape_policy):
             return False                 # 到期重刮 / all 策略 / 缺元数据
         if item.tmdb_id and not (item.imdb_id and item.aliases):
             return False                 # 与循环里的 need_details 一致：详情还没补齐
-    if (pending.item_type == "episode" and tmdb_client.configured
+    if (pending.item_type == "episode" and _tmdb.tmdb_client.configured
             and pending.series_guid):
         # B 方案补全：父 series 从没走过 TMDB（无 tmdb_id 且无尝试记录）时不能跳过——
         # episode 隐式创建的 series 平时走不到 TMDB 搜索分支，跳过了就永远刮不到。
@@ -2583,13 +2605,13 @@ def _tmdb_work(need_search: bool, name: str, year, kind: str,
     ``want_details`` 由调用方按「写库那一步会不会用详情」算好（新条目要补 IMDb Id 与别名、
     带补图标记的条目要重取图）；这里不再对每个命中都无条件拉一次详情。
     """
-    hit = tmdb_client.search(name, year, kind) if need_search else None
+    hit = _tmdb.tmdb_client.search(name, year, kind) if need_search else None
     details = None
     if hit:
         if want_details:
-            details = tmdb_client.details(str(hit.get("id")), kind)
+            details = _tmdb.tmdb_client.details(str(hit.get("id")), kind)
     elif existing_id and want_details:
-        details = tmdb_client.details(str(existing_id), kind)
+        details = _tmdb.tmdb_client.details(str(existing_id), kind)
     return hit, details
 
 
@@ -3051,7 +3073,7 @@ def _prepare_and_prefetch(db: Session, batch: list, ctx: "_ScanContext", pool) -
                     pending.series_tmdb = _submit(pool, 
                         _tmdb_work, False, "", None, "series", str(series_id), True,
                     )
-            elif (not series_id and tmdb_client.configured
+            elif (not series_id and _tmdb.tmdb_client.configured
                     and pending.series_guid not in ctx.series_tmdb_searched):
                 # B 方案补全：episode 隐式创建的 series 平时走不到 TMDB 搜索，
                 # NFO 里又没有 tmdb_id 时，按剧名搜一次（TMDB 只补图与缺的字段，
@@ -4032,11 +4054,11 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                         if tmdb_res and not series.tmdb_id:
                             series_hit, series_details = tmdb_res
                             if series_hit:
-                                tmdb_client.apply(series, series_hit, "series")
+                                _tmdb.tmdb_client.apply(series, series_hit, "series")
                                 stats["scraped"] += 1
                                 series_tmdb_applied = True
                             if series_details:
-                                tmdb_client.apply_details(series, series_details)
+                                _tmdb.tmdb_client.apply_details(series, series_details)
                         if (series_guid in ctx.series_tmdb_searched
                                 and not series.tmdb_id and not series.last_scraped_at):
                             # 本轮干净地搜过但没命中：记一笔尝试，免得以后每轮重扫
@@ -4052,7 +4074,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             ):
                                 details = ctx.nfo_series_details.get(series_guid)
                                 if details is not None:
-                                    tmdb_client.apply_images(series, details)
+                                    _tmdb.tmdb_client.apply_images(series, details)
                             nfo_lib.apply_nfo(series, series_nfo, "series")
                             stats["nfo"] = stats.get("nfo", 0) + 1
 
@@ -4098,9 +4120,9 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             if not nfo_data.get("imdb_id") and (
                                 needs_repair or not (item.imdb_id and item.aliases)
                             ):
-                                tmdb_client.apply_details(item, _pending.tmdb_details)
+                                _tmdb.tmdb_client.apply_details(item, _pending.tmdb_details)
                             if needs_repair or not (item.poster_path or item.primary_image_url):
-                                tmdb_client.apply_images(item, _pending.tmdb_details)
+                                _tmdb.tmdb_client.apply_images(item, _pending.tmdb_details)
                             nfo_lib.apply_nfo(item, nfo_data, kind)
                             stats["nfo"] = stats.get("nfo", 0) + 1
                             if needs_repair:
@@ -4111,7 +4133,7 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                                 # 搜索结果在批次开头就取回了（写事务里不发网络请求）
                                 hit = _pending.tmdb_hit
                                 if hit:
-                                    tmdb_client.apply(item, hit, kind)
+                                    _tmdb.tmdb_client.apply(item, hit, kind)
                                     stats["scraped"] += 1
                                 if nfo_data:
                                     # 有 NFO 但无 tmdb_id：TMDB 打底，NFO 文本优先
@@ -4128,8 +4150,8 @@ def _scan_library_body(db: Session, library: emby_models.Library,
                             # v2.42.9 起图片也一样：下载在 _prepare_and_prefetch 的
                             # prewarm_images 里完成，这里的 _set_image 只查本地文件
                             if item.tmdb_id and (needs_repair or not (item.imdb_id and item.aliases)):
-                                if not needs_repair or tmdb_client.apply_images(item, _pending.tmdb_details):
-                                    tmdb_client.apply_details(item, _pending.tmdb_details)
+                                if not needs_repair or _tmdb.tmdb_client.apply_images(item, _pending.tmdb_details):
+                                    _tmdb.tmdb_client.apply_details(item, _pending.tmdb_details)
                                 if needs_repair:
                                     item.repair_requested_at = None
                                     stats["repaired"] = stats.get("repaired", 0) + 1

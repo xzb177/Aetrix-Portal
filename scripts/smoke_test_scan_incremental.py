@@ -40,6 +40,7 @@ from backend.database import engine, init_db  # noqa: E402
 from backend.emby_server import models as em  # noqa: E402
 from backend.emby_server import mounts as mnt  # noqa: E402
 from backend.emby_server import scanner as sc  # noqa: E402
+from backend.emby_server import tmdb as tmdb_mod  # noqa: E402
 
 init_db()
 Session = sessionmaker(bind=engine)
@@ -259,8 +260,8 @@ class FakeTmdb:
         return None
 
 
-real_tmdb = sc.tmdb_client
-sc.tmdb_client = FakeTmdb()
+real_tmdb = tmdb_mod.tmdb_client
+tmdb_mod.tmdb_client = FakeTmdb()
 lib.scrape_policy = "3m"
 aged = db.query(em.MediaItem).filter(
     em.MediaItem.file_path == os.path.join(dir_paths[5], "Delta Movie 05-00 (2020).mkv")).first()
@@ -283,7 +284,7 @@ settled = scan("3m 策略 + 未到期条目")
 # 文件级 fast-skip 下，有指纹的都会跳过（197 个），包含那 1 个有元数据的
 check("已有元数据且未到期的条目被跳过", (settled.get("unchanged") or 0) >= 1,
       f"unchanged={settled.get('unchanged')}")
-sc.tmdb_client = real_tmdb
+tmdb_mod.tmdb_client = real_tmdb
 lib.scrape_policy = "missing_only"
 db.commit()
 
@@ -322,7 +323,7 @@ tv_lib = em.Library(guid="v" * 32, name="剧集增量库", collection_type="tvsh
 db.add(tv_lib)
 db.commit()
 
-sc.tmdb_client = FakeTmdb()          # configured = True：正是会踩到这个漏洞的部署
+tmdb_mod.tmdb_client = FakeTmdb()          # configured = True：正是会踩到这个漏洞的部署
 
 tv_cold = scan_library(tv_lib, "剧集库冷扫（配了 TMDB）")
 tv_types: dict = {}
@@ -378,7 +379,7 @@ check("目录变了就整目录重做（新增的那一集入库，其余集安�
       f"added={tv_added['added']} unchanged={tv_added.get('unchanged', 0)} "
       f"side={counters['side']} 期望={TV_EPS + 1}")
 
-sc.tmdb_client = real_tmdb
+tmdb_mod.tmdb_client = real_tmdb
 
 # ==================== 11. 远程挂载：参与增量且不多列目录 ====================
 REMOTE_DIRS = 3
