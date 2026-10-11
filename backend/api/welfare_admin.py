@@ -492,6 +492,13 @@ def create_lottery_round(
     )
     _audit(db, current_admin.id, "lottery_round_create", "lottery_round", result.id, {"title": req.title, "chat_id": req.chat_id})
     db.commit()
+    # 新活动创建后通知到群（之前漏掉了，群里没人知道有新抽奖）。
+    # 通知失败不影响创建结果，只记日志。
+    try:
+        notify_result = lottery_module.notify_new_round(db, result.id)
+    except Exception:
+        notify_result = None
+        logger.exception("群抽奖新活动通知失败 round_id=%s（不影响创建结果）", result.id)
     return {
         "id": result.id,
         "title": result.title,
@@ -500,6 +507,7 @@ def create_lottery_round(
         "seed_hash": result.seed_hash,
         "draw_at": result.draw_at.isoformat() if result.draw_at else None,
         "created_at": result.created_at.isoformat() if result.created_at else None,
+        "notify": notify_result,
     }
 
 
