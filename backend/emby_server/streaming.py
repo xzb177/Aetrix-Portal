@@ -14,7 +14,7 @@ import time
 import uuid
 from datetime import datetime
 from email.utils import formatdate
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -25,6 +25,12 @@ from backend.emby_server.playback_tune import RANGE_LIMITER
 from urllib.parse import urljoin, urlsplit
 
 from backend.emby_server.mounts import MountError
+
+if TYPE_CHECKING:
+    # httpx 运行时是延迟导入（各函数内按需 import，保持模块导入轻量）；
+    # 但模块注解引用了 httpx.AsyncClient / httpx.Timeout，这里给类型检查器一个声明，
+    # 消除未定义名称（pyflakes F821）。运行时不执行，不影响延迟导入。
+    import httpx
 
 logger = logging.getLogger(__name__)
 
