@@ -5,7 +5,8 @@
   1. 函数内声明了 global 但该函数（含嵌套）从未对其赋值 —— 死 global 声明；
   2. 简单赋值（ast.Assign 且 targets 恰为 1 个 Name）后从未被读取 —— 无用局部变量。
 
-注意：import 遮蔽类问题（C1/C2）不在本测试范围内。
+注意：import 遮蔽类问题（如被同名形参遮蔽的无用 import）不在本测试范围内，
+由 pyflakes 的 F811 在 CI 日志中覆盖。
 """
 
 from __future__ import annotations
