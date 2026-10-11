@@ -754,6 +754,72 @@ def notify_draw_results(db: Session, round_id: int, winners: list) -> dict:
     return result
 
 
+def notify_new_round(db: Session, round_id: int) -> dict:
+    """新抽奖活动创建后通知：群公告 + 参加按钮。
+
+    管理后台创建抽奖活动后调用，让群成员知道有新抽奖可参加。
+    TG 发送走函数内懒导入（避免循环依赖），任何发送失败只记日志不抛异常。
+    """
+    result: dict[str, Any] = {"sent": False, "group": False}
+    if not is_enabled(db):
+        return result
+    try:
+        from backend.tg_bot import sender
+    except Exception:
+        logger.exception("群抽奖新活动通知：导入 tg_bot.sender 失败")
+        return result
+
+    round = db.query(models.LotteryRound).filter(models.LotteryRound.id == round_id).first()
+    if not round:
+        return result
+    prizes = (
+        db.query(models.LotteryRoundPrize)
+        .filter(models.LotteryRoundPrize.round_id == round_id)
+        .order_by(models.LotteryRoundPrize.sort.asc())
+        .all()
+    )
+
+    def _prize_label(p) -> str:
+        name = html.escape(str(p.name or ""))
+        qty = p.quantity or 1
+        ptype = str(p.type or "").lower()
+        if ptype == "days":
+            return f"🎁 {name}：公益{p.value}天 ×{qty}"
+        elif ptype == "points":
+            return f"🎁 {name}：{p.value}积分 ×{qty}"
+        elif ptype == "whitelist":
+            return f"🎁 {name}：白名单 ×{qty}"
+        return f"🎁 {name} ×{qty}"
+
+    round_title = html.escape(str(round.title or ""))
+    prize_lines = "\n".join(_prize_label(p) for p in prizes) if prizes else "🎁 神秘奖品"
+    if round.draw_at:
+        draw_text = html.escape(str(round.draw_at))
+    else:
+        draw_text = "手动开奖"
+    group_text = (
+        f"🎲 <b>新抽奖来啦！</b>\n\n「{round_title}」\n\n"
+        f"{prize_lines}\n\n"
+        f"⏰ 开奖时间：{draw_text}\n\n"
+        f"👇 点击下方按钮参加"
+    )
+    reply_markup = {
+        "inline_keyboard": [
+            [{"text": "🎲 参加抽奖", "callback_data": f"lottery_join:{round_id}"}]
+        ]
+    }
+    try:
+        ok, err = sender.send_message(db, round.chat_id, group_text, reply_markup=reply_markup)
+        result["group"] = bool(ok)
+        if not ok:
+            logger.warning("群抽奖新活动群公告发送失败 round_id=%s: %s", round_id, err)
+    except Exception:
+        logger.exception("群抽奖新活动群公告发送异常 round_id=%s", round_id)
+
+    result["sent"] = True
+    return result
+
+
 def run_due_draws(db: Session) -> dict:
     """扫描并自动开奖所有到期的轮次。
 
