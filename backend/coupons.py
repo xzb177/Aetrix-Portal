@@ -329,11 +329,24 @@ def sweep_stale_reservations(db: Session, hours: Optional[int] = None) -> dict:
             release(db, usage.id)
             summary["released"] += 1
         elif order.status == "pending":
-            order.status = "closed"
-            order.closed_at = now
-            release(db, usage.id)
-            summary["closed_orders"] += 1
-            summary["released"] += 1
+            # 条件 UPDATE：只有库里仍是 pending 才关单，避免覆盖并发支付回调刚写入的 paid
+            closed = db.query(type(order)).filter(
+                type(order).order_id == order.order_id,
+                type(order).status == "pending",
+            ).update({"status": "closed", "closed_at": now}, synchronize_session=False)
+            if closed:
+                release(db, usage.id)
+                summary["closed_orders"] += 1
+                summary["released"] += 1
+            else:
+                # 0 行说明状态已被并发改动（如支付回调刚置为 paid），刷新后按新状态收尾
+                db.refresh(order)
+                if order.status == "paid":
+                    consume(db, usage.id)
+                    summary["consumed"] += 1
+                else:  # closed / refunded：正常路径已释放，再走一次是幂等的
+                    release(db, usage.id)
+                    summary["released"] += 1
         elif order.status == "paid":
             consume(db, usage.id)
             summary["consumed"] += 1
