@@ -358,8 +358,14 @@ onMounted(() => {
               <el-option label="积分" value="points" />
               <el-option label="白名单" value="whitelist" />
             </el-select>
-            <el-input-number v-model="p.value" :min="0" controls-position="right" class="prize-num" aria-label="奖品值" />
-            <el-input-number v-model="p.quantity" :min="1" controls-position="right" class="prize-num" aria-label="份数" />
+            <div class="prize-field">
+              <span class="prize-label">{{ p.type === 'days' ? '天数' : p.type === 'points' ? '积分' : '奖品值' }}</span>
+              <el-input-number v-model="p.value" :min="0" controls-position="right" class="prize-num" aria-label="奖品值" />
+            </div>
+            <div class="prize-field">
+              <span class="prize-label">份数</span>
+              <el-input-number v-model="p.quantity" :min="1" controls-position="right" class="prize-num" aria-label="份数" />
+            </div>
             <el-button link type="danger" :icon="Delete" aria-label="删除奖品" @click="prizes.splice(i, 1)" />
           </div>
           <el-button @click="addPrize">添加奖品</el-button>
@@ -448,6 +454,8 @@ onMounted(() => {
 .prize-name { flex: 1 1 160px; min-width: 0; }
 .prize-type { width: 120px; }
 .prize-num { width: 110px; }
+.prize-field { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.prize-label { font-size: 12px; line-height: 1; color: var(--au-text-2); white-space: nowrap; user-select: none; }
 .detail-loading { min-height: 160px; }
 .detail-title { display: flex; align-items: center; gap: 6px; margin: 16px 0 8px; font-weight: 600; color: var(--au-text); }
 .detail-title svg { color: var(--au-primary); }
