@@ -194,8 +194,7 @@ class TestDriveAuth:
         """拿不到 SA token 时降级为空 dict（不阻断播放）。"""
         from backend.emby_server import drive_auth
 
-        drive_auth._cached_token = None
-        drive_auth._cached_expire_at = 0.0
+        drive_auth._reset_state()
         with mock.patch.object(drive_auth, "_pick_sa", return_value=None):
             assert drive_auth.drive_auth_headers(DRIVE_URL) == {}
 
@@ -209,25 +208,33 @@ class TestDriveAuth:
     def test_get_token_never_raises(self):
         from backend.emby_server import drive_auth
 
-        drive_auth._cached_token = None
-        drive_auth._cached_expire_at = 0.0
+        drive_auth._reset_state()
         with mock.patch.object(drive_auth, "_pick_sa", side_effect=RuntimeError("boom")):
             assert drive_auth.get_drive_bearer_token() is None
 
     def test_token_cache_hit(self):
-        """进程内缓存：剩余有效期 >120s 直接返回，不再调 _pick_sa。"""
+        """按 SA 分账号缓存：同一 SA 剩余有效期 >120s 直接返回，不再换 token。
+
+        P1 修复后 get_drive_bearer_token() 每次都会走 _pick_sa() 轮询
+        （这正是修复点），缓存命中体现在"不调 _sa_access_token"上。
+        """
         from backend.emby_server import drive_auth
 
-        drive_auth._cached_token = "CACHED"
-        drive_auth._cached_expire_at = time.monotonic() + 3000
+        drive_auth._reset_state()
+        drive_auth._token_cache["sa-cache@x"] = ("CACHED", time.monotonic() + 3000)
+        fake_changes = mock.MagicMock()
+        fake_changes._sa_access_token.side_effect = AssertionError("should not be called")
         try:
             with mock.patch.object(
-                drive_auth, "_pick_sa", side_effect=AssertionError("should not be called")
+                drive_auth,
+                "_pick_sa",
+                return_value={"client_email": "sa-cache@x", "private_key": "pk"},
+            ), mock.patch.object(
+                drive_auth, "_load_drive_changes", return_value=fake_changes
             ):
                 assert drive_auth.get_drive_bearer_token() == "CACHED"
         finally:
-            drive_auth._cached_token = None
-            drive_auth._cached_expire_at = 0.0
+            drive_auth._reset_state()
 
 
 # ==================== play_sign 配置 ====================
