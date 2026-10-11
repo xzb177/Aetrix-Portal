@@ -118,7 +118,8 @@ def test_details_only_fetched_when_the_write_step_needs_them(monkeypatch):
             calls.append("details")
             return {"id": tmdb_id}
 
-    monkeypatch.setattr(sc, "tmdb_client", FakeClient())
+    # scanner 不再快照 tmdb_client（跟随 tmdb 模块活引用），打桩点改到 canonical 位置
+    monkeypatch.setattr(tmdb_mod, "tmdb_client", FakeClient())
 
     hit, details = sc._tmdb_work(True, "Movie", 2020, "movie", None, False)
     assert hit == {"id": 42} and details is None
@@ -147,7 +148,8 @@ def test_details_falls_back_to_the_stored_id(monkeypatch):
             calls.append(("details", tmdb_id))
             return {"id": tmdb_id}
 
-    monkeypatch.setattr(sc, "tmdb_client", FakeClient())
+    # scanner 不再快照 tmdb_client（跟随 tmdb 模块活引用），打桩点改到 canonical 位置
+    monkeypatch.setattr(tmdb_mod, "tmdb_client", FakeClient())
 
     hit, details = sc._tmdb_work(True, "Movie", 2020, "movie", "77", True)
     assert hit is None and details == {"id": "77"}
@@ -175,7 +177,8 @@ def test_no_search_when_search_is_not_needed(monkeypatch):
             calls.append(("details", tmdb_id))
             return {"id": tmdb_id}
 
-    monkeypatch.setattr(sc, "tmdb_client", FakeClient())
+    # scanner 不再快照 tmdb_client（跟随 tmdb 模块活引用），打桩点改到 canonical 位置
+    monkeypatch.setattr(tmdb_mod, "tmdb_client", FakeClient())
 
     hit, details = sc._tmdb_work(False, "Movie", 2020, "movie", "1", True)
     assert hit is None and details == {"id": "1"}
