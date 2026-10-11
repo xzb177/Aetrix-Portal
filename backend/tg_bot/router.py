@@ -142,6 +142,19 @@ def dispatch(db, update: dict) -> None:
             _verify_bind_code(db, update)
             return
 
+        # 口令抽奖：群内非命令文本先尝试匹配口令关键词（群级限流防刷）
+        if in_group and not text.startswith("/"):
+            if not _group_allow(chat_id, group_limit):
+                return
+            from backend.tg_bot import callbacks
+
+            try:
+                if callbacks.handle_lottery_password(db, chat_id, tg_user, text):
+                    return
+            except Exception:
+                logger.exception("lottery password dispatch failed")
+            return
+
         # 非命令文本忽略
         if not text.startswith("/"):
             return

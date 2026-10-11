@@ -38,6 +38,7 @@ const pageSize = 20
 const columns = computed<DataColumn[]>(() => [
   { key: 'title', label: '标题', mobile: 'title' },
   { key: 'chat_id', label: '群ID', width: 140 },
+  { key: 'lottery_type_label', label: '类型', width: 100 },
   { key: 'status', label: '状态', width: 100 },
   { key: 'participant_count', label: '参与人数', width: 100 },
   { key: 'prize_count', label: '奖品数', width: 90 },
@@ -50,7 +51,10 @@ const load = async () => {
   loadError.value = ''
   try {
     const res = await fetchLotteryRounds({ page: page.value, page_size: pageSize })
-    rows.value = res.items ?? []
+    rows.value = (res.items ?? []).map((r: any) => ({
+      ...r,
+      lottery_type_label: r.lottery_type === 'password' ? '口令抽奖' : '按钮抽奖',
+    }))
     total.value = res.total ?? 0
   } catch (e) {
     // 错误态交给表格（带「重试」），不再只弹一条转瞬即逝的提示
@@ -62,11 +66,11 @@ const load = async () => {
 
 // 新建活动
 const dlgVisible = ref(false)
-const form = ref({ title: '', chat_id: '', draw_at: null as string | Date | null, max_participants: 0 })
+const form = ref({ title: '', chat_id: '', draw_at: null as string | Date | null, max_participants: 0, lottery_type: 'button', password_keyword: '' })
 const prizes = ref<{ name: string; type: string; value: number; quantity: number }[]>([])
 
 const openCreate = () => {
-  form.value = { title: '', chat_id: '', draw_at: null, max_participants: 0 }
+  form.value = { title: '', chat_id: '', draw_at: null, max_participants: 0, lottery_type: 'button', password_keyword: '' }
   prizes.value = [{ name: '', type: 'days', value: 0, quantity: 1 }]
   dlgVisible.value = true
 }
@@ -81,11 +85,14 @@ const submitCreate = async () => {
   if (!form.value.chat_id.trim() || !Number.isInteger(chatId) || chatId === 0) { ElMessage.warning('请填写有效的群ID（整数）'); return }
   if (prizes.value.length < 1) { ElMessage.warning('至少添加 1 个奖品'); return }
   if (prizes.value.some(p => !p.name.trim())) { ElMessage.warning('每个奖品名称不能为空'); return }
+  if (form.value.lottery_type === 'password' && !form.value.password_keyword.trim()) { ElMessage.warning('口令抽奖必须填写口令'); return }
   const payload: any = {
     title: form.value.title.trim(),
     chat_id: chatId,
     draw_at: form.value.draw_at instanceof Date ? form.value.draw_at.toISOString() : (form.value.draw_at || null),
     max_participants: form.value.max_participants > 0 ? form.value.max_participants : null,
+    lottery_type: form.value.lottery_type,
+    password_keyword: form.value.lottery_type === 'password' ? form.value.password_keyword.trim() : null,
     prizes: prizes.value.map(p => ({ name: p.name.trim(), type: p.type, value: Number(p.value), quantity: Number(p.quantity) }))
   }
   creating.value = true
@@ -340,6 +347,15 @@ onMounted(() => {
       <el-form :label-position="isPhone ? 'top' : 'right'" label-width="80px">
         <el-form-item label="标题">
           <el-input v-model="form.title" />
+        </el-form-item>
+        <el-form-item label="抽奖类型">
+          <el-select v-model="form.lottery_type" style="width: 100%">
+            <el-option label="按钮抽奖" value="button" />
+            <el-option label="口令抽奖" value="password" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="form.lottery_type === 'password'" label="口令">
+          <el-input v-model="form.password_keyword" placeholder="用户在群里发送此口令参加，如：我要抽奖" />
         </el-form-item>
         <el-form-item label="群ID">
           <el-input v-model="form.chat_id" placeholder="群 chat_id，如 -1001234567890" />

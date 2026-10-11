@@ -1420,6 +1420,9 @@ class LotteryRound(Base):
     draw_at = Column(DateTime, nullable=True)      # 计划开奖时间，空=手动开奖
     drawn_at = Column(DateTime, nullable=True)
     max_participants = Column(Integer, nullable=False, default=0)  # 0=不限
+    # 抽奖类型：button=按钮抽奖 / password=口令抽奖
+    lottery_type = Column(String(20), nullable=False, default='button', server_default='button')
+    password_keyword = Column(String(100), nullable=True)  # 口令抽奖时的关键词，button 类型时为 NULL
     seed_hash = Column(String(64), nullable=True)  # 开奖前公布的承诺
     seed = Column(String(64), nullable=True)       # 开奖后揭示
     # 三重门·公信门：drand 公开随机信标（开奖时抓取，与 seed 混合成最终种子）
