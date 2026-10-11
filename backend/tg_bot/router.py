@@ -142,10 +142,10 @@ def dispatch(db, update: dict) -> None:
             _verify_bind_code(db, update)
             return
 
-        # 口令抽奖：群内非命令文本先尝试匹配口令关键词（群级限流防刷）
+        # 口令抽奖：群内非命令文本先尝试匹配口令关键词
+        # 注意：此处不消耗群级限流预算（普通聊天不计入），防刷由 handler 内部的
+        # 幂等逻辑保证（重复口令静默，已参加/资格不符均不刷屏）。
         if in_group and not text.startswith("/"):
-            if not _group_allow(chat_id, group_limit):
-                return
             from backend.tg_bot import callbacks
 
             try:
