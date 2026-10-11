@@ -380,6 +380,8 @@ class RoundCreateRequest(BaseModel):
     prizes: List[PrizeItem]
     draw_at: Optional[str] = None
     max_participants: Optional[int] = None
+    lottery_type: str = "button"  # button=按钮抽奖 / password=口令抽奖
+    password_keyword: Optional[str] = None  # 口令抽奖时的关键词
 
 
 @admin_router.get("/welfare/lottery/rounds")
@@ -400,7 +402,7 @@ def list_lottery_rounds(
     rows = db.execute(
         text(
             """
-            SELECT r.id, r.title, r.chat_id, r.status, r.draw_at, r.created_at,
+            SELECT r.id, r.title, r.chat_id, r.status, r.lottery_type, r.draw_at, r.created_at,
                    (SELECT COUNT(*) FROM lottery_round_entries e WHERE e.round_id = r.id) AS participant_count,
                    (SELECT COUNT(*) FROM lottery_round_prizes p WHERE p.round_id = r.id) AS prize_count
             FROM lottery_rounds r
@@ -420,6 +422,7 @@ def list_lottery_rounds(
                 "title": d.get("title"),
                 "chat_id": d.get("chat_id"),
                 "status": d.get("status"),
+                "lottery_type": d.get("lottery_type") or "button",
                 "participant_count": d.get("participant_count"),
                 "prize_count": d.get("prize_count"),
                 "draw_at": d.get("draw_at"),
@@ -458,6 +461,10 @@ def create_lottery_round(
             raise HTTPException(status_code=400, detail="draw_at 时间格式无效")
     if req.max_participants is not None and req.max_participants < 1:
         raise HTTPException(status_code=400, detail="最大参与人数至少为 1")
+    if req.lottery_type not in ("button", "password"):
+        raise HTTPException(status_code=400, detail="抽奖类型只能是 button 或 password")
+    if req.lottery_type == "password" and not (req.password_keyword or "").strip():
+        raise HTTPException(status_code=400, detail="口令抽奖必须设置口令关键词")
     # 总开关：读 SystemConfig，查不到视为开启
     enabled_cfg = db.query(models.SystemConfig).filter(models.SystemConfig.key == "lottery_enabled").first()
     enabled_raw = enabled_cfg.value if enabled_cfg else "1"
@@ -489,8 +496,10 @@ def create_lottery_round(
         draw_at=dt,
         max_participants=req.max_participants,
         created_by=current_admin.id,
+        lottery_type=req.lottery_type,
+        password_keyword=req.password_keyword,
     )
-    _audit(db, current_admin.id, "lottery_round_create", "lottery_round", result.id, {"title": req.title, "chat_id": req.chat_id})
+    _audit(db, current_admin.id, "lottery_round_create", "lottery_round", result.id, {"title": req.title, "chat_id": req.chat_id, "lottery_type": req.lottery_type})
     db.commit()
     # 新活动创建后通知到群（之前漏掉了，群里没人知道有新抽奖）。
     # 通知失败不影响创建结果，只记日志。
@@ -504,6 +513,8 @@ def create_lottery_round(
         "title": result.title,
         "chat_id": result.chat_id,
         "status": result.status,
+        "lottery_type": result.lottery_type,
+        "password_keyword": result.password_keyword,
         "seed_hash": result.seed_hash,
         "draw_at": result.draw_at.isoformat() if result.draw_at else None,
         "created_at": result.created_at.isoformat() if result.created_at else None,

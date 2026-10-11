@@ -229,12 +229,15 @@ def create_round(
     draw_at: datetime | None = None,
     max_participants: int = 0,
     created_by: int | None = None,
+    lottery_type: str = "button",
+    password_keyword: str | None = None,
 ) -> models.LotteryRound:
     """创建抽奖轮次及其奖品列表。
 
     prizes 每项为 dict(name, type, value, quantity)，type 仅允许 days/points/whitelist；
     sort 按列表顺序从 0 递增。seed 明文入库（开奖后才公开，不展示），
     seed_hash 存其 sha256 供核验。
+    lottery_type: button=按钮抽奖 / password=口令抽奖；口令抽奖必须提供 password_keyword。
     """
     if not title or not title.strip():
         raise ValueError("标题不能为空")
@@ -243,6 +246,15 @@ def create_round(
     for p in prizes:
         if p.get("type") not in _PRIZE_TYPES:
             raise ValueError(f"不支持的奖品类型：{p.get('type')}")
+    if lottery_type not in ("button", "password"):
+        raise ValueError("抽奖类型只能是 button 或 password")
+    if lottery_type == "password":
+        kw = (password_keyword or "").strip()
+        if not kw:
+            raise ValueError("口令抽奖必须设置口令关键词")
+        password_keyword = kw
+    else:
+        password_keyword = None
 
     seed = secrets.token_hex(32)
     round = models.LotteryRound(
@@ -254,6 +266,8 @@ def create_round(
         draw_at=draw_at,
         max_participants=max_participants or 0,
         created_by=created_by,
+        lottery_type=lottery_type,
+        password_keyword=password_keyword,
     )
     db.add(round)
     db.flush()  # 取得 round.id 供奖品外键使用
@@ -278,6 +292,27 @@ def get_active_round(db: Session, chat_id: int) -> models.LotteryRound | None:
     return (
         db.query(models.LotteryRound)
         .filter(models.LotteryRound.chat_id == chat_id, models.LotteryRound.status == "open")
+        .order_by(models.LotteryRound.id.desc())
+        .first()
+    )
+
+
+def get_password_round(db: Session, chat_id: int, keyword: str) -> models.LotteryRound | None:
+    """口令抽奖：根据群ID+口令关键词查找进行中的口令类型轮次。
+
+    精确匹配（去空格后）；没有则返回 None。
+    """
+    kw = (keyword or "").strip()
+    if not kw:
+        return None
+    return (
+        db.query(models.LotteryRound)
+        .filter(
+            models.LotteryRound.chat_id == chat_id,
+            models.LotteryRound.lottery_type == "password",
+            models.LotteryRound.password_keyword == kw,
+            models.LotteryRound.status == "open",
+        )
         .order_by(models.LotteryRound.id.desc())
         .first()
     )

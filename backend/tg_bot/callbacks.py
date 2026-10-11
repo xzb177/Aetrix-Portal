@@ -304,6 +304,89 @@ def _handle_lottery_join(db, callback_query: dict) -> None:
         _answer_callback(db, cb_id, "系统繁忙，请稍后再试")
 
 
+def handle_lottery_password(db, chat_id: int, tg_user: dict, text: str) -> bool:
+    """口令抽奖：群消息命中口令关键词时自动登记参加。
+
+    返回 True 表示本消息被口令抽奖消费（调用方不再继续分发）；
+    返回 False 表示无匹配的口令活动，调用方继续原有分发逻辑。
+
+    三重门校验与按钮参加一致：身份门（getChatMember，fail-open）+
+    资格门（join_round 内集中检查：黑名单/新号/限流/已参加/名额）。
+    同一用户重复发送口令只算一次（join_round 返回 already 时静默，不刷屏）。
+    """
+    lot = _lottery()
+    if lot is None:
+        return False
+    try:
+        enabled = bool(lot.is_enabled(db))
+    except Exception:
+        logger.exception("lottery.is_enabled failed")
+        return False
+    if not enabled:
+        return False
+
+    keyword = (text or "").strip()
+    if not keyword:
+        return False
+    try:
+        round_obj = lot.get_password_round(db, chat_id, keyword)
+    except Exception:
+        logger.exception("lottery.get_password_round failed")
+        return False
+    if round_obj is None:
+        return False
+
+    telegram_id = tg_user.get("id")
+    if not telegram_id:
+        return True  # 消费掉，避免继续分发
+
+    # 用户身份：必须已绑定账号
+    user = resolve(db, int(telegram_id))
+    if user is None:
+        return True  # 未绑定则静默消费，不在群里刷屏提示
+
+    # 三重门·身份门：参赛者必须在 TG 群里（fail-open）
+    require_member = True
+    if hasattr(lot, "require_group_member"):
+        try:
+            require_member = bool(lot.require_group_member(db))
+        except Exception:
+            logger.exception("lottery.require_group_member failed")
+            require_member = True
+    if require_member:
+        try:
+            is_member, _status = sender.get_chat_member(db, chat_id, int(telegram_id))
+        except Exception:
+            logger.exception("getChatMember failed, fail-open")
+            is_member = None
+        if is_member is False:
+            return True  # 非群成员静默消费，不刷屏
+
+    # 参加（幂等：重复发送口令只算一次）
+    try:
+        result = lot.join_round(db, round_obj, user, int(telegram_id))
+    except Exception:
+        logger.exception("lottery password join failed")
+        return True
+    ok = bool(result.get("ok")) if isinstance(result, dict) else bool(result)
+    reason = result.get("reason") if isinstance(result, dict) else ""
+
+    display_name = html.escape(str(tg_user.get("first_name") or tg_user.get("username") or telegram_id))
+    if ok:
+        sender.send_message(db, chat_id, f"🎉 {display_name} 参加成功，祝你好运！")
+    elif reason == "already":
+        pass  # 重复发送口令：静默，不刷屏
+    elif reason == "full":
+        sender.send_message(db, chat_id, f"名额已满，{display_name} 下次再来")
+    elif reason in ("closed", "disabled"):
+        pass  # 活动已结束：静默
+    elif reason in ("blacklisted", "too_new", "rate_limited"):
+        pass  # 资格不符：静默，不打草惊蛇
+    else:
+        logger.warning("lottery password join unexpected reason=%s", reason)
+    return True
+
+
 def _handle_redpacket_claim(db, callback_query: dict, redpacket_enabled: bool | None = None) -> None:
     """处理抢红包按钮点击（B3）。
 

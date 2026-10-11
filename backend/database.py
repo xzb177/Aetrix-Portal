@@ -991,6 +991,20 @@ def _ensure_lottery_g1_tables(existing_tables: set) -> None:
                 conn.execute(text(f"ALTER TABLE lottery_rounds ADD COLUMN {col_name} {col_def}"))
             print(f"  🔧 已迁移: lottery_rounds 加列 {col_name}（三重门·公信门）")
 
+    # 抽奖类型：lottery_rounds 补 lottery_type / password_keyword 列（老库）
+    cols = {c["name"] for c in inspector.get_columns("lottery_rounds")}
+    for col_name, col_def in (
+        ("lottery_type", "VARCHAR(20) DEFAULT 'button'"),
+        ("password_keyword", "VARCHAR(100)"),
+    ):
+        if col_name not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE lottery_rounds ADD COLUMN {col_name} {col_def}"))
+            print(f"  🔧 已迁移: lottery_rounds 加列 {col_name}（抽奖类型）")
+    # 老库可能未回填默认值，将 NULL 的 lottery_type 统一置为 'button'
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE lottery_rounds SET lottery_type = 'button' WHERE lottery_type IS NULL"))
+
 
 def _ensure_index(existing_tables: set, table: str, name: str, columns: str,
                   required_column: Optional[str], message: str) -> None:
