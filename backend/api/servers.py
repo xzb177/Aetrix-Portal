@@ -260,7 +260,6 @@ async def emby_overview(
             for server in realm_nodes:
                 data = registry.serialize(db, server)
                 warnings: list[str] = []
-                label = data["name"]
 
                 identity: dict = {}
                 probe = identities.get(server.id)

@@ -1183,7 +1183,6 @@ class TmdbClient:
         冷却剩余秒数是运行时事实，前端据此显示“这把在休息，还要 xx 秒”。
         """
         now = time.monotonic()
-        cfg = settings(db)
         rows: list[dict] = []
         for idx, key in enumerate(self.api_keys):
             with self._key_lock():

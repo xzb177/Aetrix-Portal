@@ -182,7 +182,7 @@ def _unlink(path: str) -> bool:
 
 def _save(path: str, payload) -> bool:
     """原子写一个缓存文件（临时文件 + os.replace），并按需触发巡检。"""
-    global _written_since_prune, _last_prune
+    global _written_since_prune
     if not _ensure_dir(path):
         return False
     tmp = f"{path}.{os.getpid()}.tmp"

@@ -23,7 +23,6 @@ from __future__ import annotations
 import logging
 import os
 import signal
-import sys
 import threading
 import time
 
@@ -145,7 +144,6 @@ def _acquire_worker_lock(redis_client) -> bool:
 
 def _renew_worker_lock(redis_client):
     """后台线程：定期续期 worker 锁"""
-    global _worker_lock_token
     while not _shutdown_event.is_set():
         try:
             # 只续自己的锁（Lua 脚本保证原子性）

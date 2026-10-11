@@ -56,7 +56,6 @@ from backend.emby_server.auth import (
 from backend.emby_server.facets import count_virtual_items  # 索引版（虚拟库条目数）
 from backend.emby_server.scanner import (
     ScanInProgress,
-    item_guid,
     parse_media_filename,
     scan_library_sync,
 )
@@ -828,7 +827,6 @@ def _external_urls(item: em.MediaItem) -> list:
     """
     urls = []
     name = (item.name or "").strip()
-    year = item.production_year
     is_series = item.item_type in ("series", "season", "episode")
     if item.tmdb_id:
         path = "tv" if is_series else "movie"
@@ -2066,7 +2064,6 @@ def _query_items(request: Request, user: models.WebUser, db: Session, base: str)
     start = int(q.get("StartIndex") or 0)
     limit = int(q.get("Limit") or 100)
     recursive = (q.get("Recursive") or "false").lower() == "true"
-    user_id = q.get("UserId") or str(user.id)
     allowed = _library_scope(db, user)
     random_sort = any(c.strip().lower() == "random" for c in sort_by)
     ids = [x.strip() for value in q.getlist("Ids") for x in value.split(",") if x.strip()]

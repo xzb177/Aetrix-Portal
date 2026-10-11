@@ -1116,7 +1116,7 @@ def _enrich_apply(db, item: Any, fetched: dict) -> None:
     episode_tmdb = fetched.get("episode_tmdb")
     if item_type == "episode" and episode_tmdb:
         from backend.emby_server.tmdb import TmdbClient
-        applied = TmdbClient.apply_episode(item, episode_tmdb)
+        TmdbClient.apply_episode(item, episode_tmdb)
         # 剧照：IO 阶段已预热，写库阶段只落字段（与海报同一口径）
         still_url = fetched.get("episode_still_url")
         if still_url and not (item.poster_path or item.primary_image_url):
