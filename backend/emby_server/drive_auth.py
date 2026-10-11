@@ -6,8 +6,9 @@
 - SA 的发现与 access_token 换取（JWT 断言换 token）统一复用 ``drive_changes``
   模块的既有实现（``_discover_sa_files`` / ``_sa_access_token``），
   横切能力只维护一套，本模块不重复实现 JWT 逻辑。
-- access_token 在本模块再做一层进程内短缓存（55 分钟，剩余有效期大于 120 秒
-  直接命中），由 threading.Lock 保护，减少重复换 token 的开销。
+- access_token 在本模块再做一层进程内"按 SA 分账号缓存"：以 SA 的
+  ``client_email`` 为 key，每个 SA 独立存 (token, expire_at)，TTL 55 分钟，
+  剩余有效期大于 120 秒直接命中；由 threading.Lock 保护，减少重复换 token 的开销。
 - 任何失败（无可用 SA、换 token 异常等）均返回 None，由调用方降级处理，
   本模块永不抛出异常。
 """
@@ -15,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import random as _random
 import threading
 import time
 from types import ModuleType
@@ -47,13 +49,28 @@ _TOKEN_TTL_SECONDS: float = 55 * 60
 _TOKEN_MIN_REMAIN_SECONDS: float = 120
 
 _cache_lock = threading.Lock()
-_cached_token: str | None = None
-_cached_expire_at: float = 0.0  # time.monotonic() 基准
+# P1 修复（审查）：token 缓存从"全局单条"改为"按 SA 分账号"。
+# key = SA 的 client_email（稳定唯一标识），value = (token, expire_at)。
+# expire_at 以 time.monotonic() 为基准。此前全局缓存 55 分钟，
+# 导致 100 个 SA 的轮询形同虚设、流量全压在单个 SA 上把配额干爆（probe 403）。
+_token_cache: dict[str, tuple[str, float]] = {}
+
 # P1 修复（审查）：播放 token 按 SA 轮换，不再永远用第一个 SA。
 # 进程启动时随机起点，避免多 worker 进程同时从第 0 个 SA 开始。
-import random as _random
 _sa_rr_index = _random.randint(0, 1000000)
 _sa_rr_lock = threading.Lock()
+
+
+def _reset_state() -> None:
+    """清空按 SA 分账号的 token 缓存并复位轮询起点。
+
+    测试/调试用的显式重置点（生产路径不会调用）。
+    """
+    global _sa_rr_index
+    with _cache_lock:
+        _token_cache.clear()
+    with _sa_rr_lock:
+        _sa_rr_index = 0
 
 
 def _load_drive_changes() -> ModuleType:
@@ -136,31 +153,45 @@ def _pick_sa() -> dict[str, Any] | None:
 def get_drive_bearer_token() -> str | None:
     """获取 Drive 访问用的 Bearer access_token；失败返回 None，永不抛异常。
 
-    进程内缓存 (token, expire_at)：剩余有效期大于 120 秒直接返回；缓存失效
-    时经 SA 换取新 token，并按 55 分钟重新记缓存（JWT 断言逻辑由
-    drive_changes._sa_access_token 内部实现，本模块不重复实现）。
+    每次调用都先经 ``_pick_sa()`` round-robin 选出一个 SA，再以该 SA 的
+    ``client_email`` 为 key 查进程内分账号缓存：剩余有效期大于 120 秒直接返回；
+    否则经 ``drive_changes._sa_access_token`` 换取新 token，并按 55 分钟写入
+    该 SA 自己的缓存条目。换 token 失败/返回空值时不写缓存，避免空值污染
+    后续请求；无可用 SA 时直接返回 None，不查缓存。
     """
-    global _cached_token, _cached_expire_at
-    now = time.monotonic()
-    with _cache_lock:
-        if _cached_token and now + _TOKEN_MIN_REMAIN_SECONDS < _cached_expire_at:
-            return _cached_token
     try:
         drive_changes = _load_drive_changes()
         sa = _pick_sa()
-        if not sa:
-            logger.debug("drive_auth: 未发现可用的 Google Drive 服务账号凭据")
-            return None
-        token = drive_changes._sa_access_token(sa)
-        if not token:
-            return None
     except Exception as exc:
-        logger.warning("drive_auth: 获取 Drive Bearer token 失败，调用方降级处理: %s", exc)
+        logger.warning("drive_auth: 加载 Drive 凭据模块失败，调用方降级处理: %s", exc)
         return None
+    if not sa:
+        logger.debug("drive_auth: 未发现可用的 Google Drive 服务账号凭据")
+        return None
+    email = sa.get("client_email")
+    if not email:
+        logger.debug("drive_auth: SA 缺少 client_email，无法建立分账号缓存")
+        return None
+    now = time.monotonic()
+    # 查缓存 → 换 token → 写缓存 全程持锁：同一 SA 不会并发重复换取
     with _cache_lock:
-        _cached_token = token
-        _cached_expire_at = now + _TOKEN_TTL_SECONDS
-    return token
+        cached = _token_cache.get(email)
+        if cached and now + _TOKEN_MIN_REMAIN_SECONDS < cached[1]:
+            return cached[0]
+        try:
+            token = drive_changes._sa_access_token(sa)
+        except Exception as exc:
+            logger.warning(
+                "drive_auth: 为 SA %s 换取 Drive Bearer token 失败，调用方降级处理: %s",
+                email,
+                exc,
+            )
+            return None
+        if not token:
+            # 空值不入缓存，下次调用重新尝试换取
+            return None
+        _token_cache[email] = (token, now + _TOKEN_TTL_SECONDS)
+        return token
 
 
 def drive_auth_headers(url: str) -> dict[str, str]:
