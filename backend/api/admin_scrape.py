@@ -1008,9 +1008,6 @@ class AutoScanSaveRequest(BaseModel):
 class ChaseNewSaveRequest(BaseModel):
     enabled: bool = Field(default=False, description="追新总开关")
     interval: int = Field(default=10, description="轮询间隔（分钟），5-120")
-    strm_enabled: Optional[bool] = Field(default=None, description=".strm 监听开关："
-                                         "库路径是 /strm/... 时，strm_gen 产出的新 .strm 才会触发增量扫描；"
-                                         "不传 = 保持现有值（老前端兼容）")
     excluded: str = Field(default="",
                           description="**排除**监听的库 ID，逗号分隔，空 = 全部启用库都监听")
     # 旧字段（包含清单）：只为还在用老前端的部署保留，后端会换算成排除清单
@@ -1105,8 +1102,7 @@ def save_chase_new(
 ):
     """保存追新配置：立即生效，无需重启"""
     cfg = change_watcher.save_config(db, req.enabled, req.interval,
-                                     excluded=req.excluded, libraries=req.libraries,
-                                     strm_enabled=req.strm_enabled)
+                                     excluded=req.excluded, libraries=req.libraries)
     return {"success": True, **cfg}
 
 
@@ -1227,6 +1223,50 @@ def save_enrich_episode_night(
     from backend.emby_server import enrich_worker
     cfg = enrich_worker.save_episode_night_config(
         db, req.enabled, req.night_start, req.night_end, req.night_tz)
+    return {"success": True, **cfg}
+
+
+# ==================== 单集分项开关（批3：刮削瘦身收官）====================
+
+class EnrichEpisodeFieldsSaveRequest(BaseModel):
+    title: bool = Field(default=True, description="单集标题开关（默认开）")
+    overview: bool = Field(default=True, description="单集简介开关（默认开）")
+    still: bool = Field(default=True, description="单集剧照开关（默认开）")
+
+
+@admin_emby_router.get("/scrape/enrich-episode-fields")
+def get_enrich_episode_fields(
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """单集分项开关：当前生效值 + 默认值。
+
+    from_env 为真时环境变量覆盖了后台配置（改这里不生效）。
+    三项默认全开 = 与现状行为完全一致。
+    """
+    from backend.emby_server import enrich_worker
+    cfg = enrich_worker.get_episode_field_config(db)
+    return {
+        "success": True,
+        **cfg,
+        "defaults": {
+            "title": True,
+            "overview": True,
+            "still": True,
+        },
+    }
+
+
+@admin_emby_router.put("/scrape/enrich-episode-fields")
+def save_enrich_episode_fields(
+    req: EnrichEpisodeFieldsSaveRequest,
+    staff: base_models.WebUser = Depends(require_staff),
+    db: Session = Depends(get_db),
+):
+    """保存单集分项开关（写 SystemConfig，60 秒内热生效，无需重启）"""
+    from backend.emby_server import enrich_worker
+    cfg = enrich_worker.save_episode_field_config(
+        db, req.title, req.overview, req.still)
     return {"success": True, **cfg}
 
 
@@ -1741,14 +1781,14 @@ def search_tmdb_candidates(
     return {"candidates": candidates}
 
 
-# ==================== 豆瓣优先（中文内容主数据源） ====================
+# ==================== 豆瓣（可选）：中文兜底数据源 ====================
 
 @admin_emby_router.get("/scrape/douban-config")
 def get_douban_config(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """读取豆瓣优先配置：总开关（默认开）+ 限速（秒/次）"""
+    """读取豆瓣配置：总开关（默认关）+ 限速（秒/次）"""
     from backend.emby_server import douban as _dbn
     return {
         "enabled": _dbn.enabled(db),
@@ -1767,7 +1807,7 @@ def save_douban_config(
     staff: base_models.WebUser = Depends(require_staff),
     db: Session = Depends(get_db),
 ):
-    """保存豆瓣优先配置（保存即热生效）"""
+    """保存豆瓣配置（保存即热生效）"""
     from backend.emby_server import douban as _dbn
     from backend.integrations import store
     enabled = body.enabled
@@ -1779,7 +1819,7 @@ def save_douban_config(
             _dbn.DOUBAN_RATE_KEY: str(iv),
         },
         {
-            _dbn.DOUBAN_ENABLED_KEY: "豆瓣优先总开关（中文标题先走豆瓣）",
+            _dbn.DOUBAN_ENABLED_KEY: "豆瓣（可选）总开关（中文标题 TMDB 未命中时走豆瓣兜底）",
             _dbn.DOUBAN_RATE_KEY: "豆瓣请求最小间隔秒数",
         },
     )

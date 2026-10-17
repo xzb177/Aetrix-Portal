@@ -351,7 +351,7 @@ def economy_update_settings(
     # - 复合校验（stream_accel 联动、签到、活力值）仍在端点层、落库前 400。
     # 失效缺口补齐：旧代码只手动失效 stream_accel_*/vitality_*，其余键保存后
     # 60 秒内可能读到旧值；统一通道对全部落库键 + 删行键写时失效。
-    from backend import config_schema, config_service
+    from backend import config_service
 
     values: dict = {}
     is_secret: dict = {}
@@ -370,11 +370,9 @@ def economy_update_settings(
 
     saved: list = []
     if values:
-        try:
-            saved = config_service.save_config(
-                db, values, schema="economy", audit=_capture)
-        except config_schema.ConfigValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        # 校验失败抛 ConfigValueError，由 main.py 的统一 handler 转 400
+        saved = config_service.save_config(
+            db, values, schema="economy", audit=_capture)
 
     db.commit()
     # （写时失效已由 store.write_values 承接，失效时机从提交后移到写时，
@@ -390,12 +388,11 @@ def economy_update_settings(
     return {"success": True, "changed": list(changed.keys())}
 
 
-# ---------- 防盗链（.strm 签名 + 播放签名，见 backend/emby_server/play_sign.py） ----------
+# ---------- 防盗链（播放签名 + 来路检查，见 backend/emby_server/play_sign.py） ----------
 
 class HotlinkConfigRequest(BaseModel):
     enabled: bool = True
     play_sign_ttl: int = 900
-    strm_sig_ttl: int = 3600
     # 配置瘦身第 3c 批：Referer 白名单（逗号分隔域名）；None=老前端没传=不改
     allowed_referers: Optional[str] = None
 
@@ -405,7 +402,7 @@ def hotlink_get_config(
     current_admin: models.WebUser = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
-    """防盗链配置读取：总开关 + 播放签名 TTL + .strm 签名 TTL（含默认值）。"""
+    """防盗链配置读取：总开关 + 播放签名 TTL（含默认值）。"""
     from backend.emby_server import play_sign
 
     return play_sign.config_payload(db)
@@ -430,19 +427,29 @@ def hotlink_update_config(
             db,
             enabled=request.enabled,
             play_sign_ttl=request.play_sign_ttl,
-            strm_sig_ttl=request.strm_sig_ttl,
         )
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     _audit(db, current_admin, "hotlink_update_config", "system", None,
            {"enabled": request.enabled, "play_sign_ttl": request.play_sign_ttl,
-            "strm_sig_ttl": request.strm_sig_ttl,
             "allowed_referers": request.allowed_referers})
     db.commit()
     return result
 
 
 # ---------- 经济统计 ----------
+
+def _checkin_day_key(day_val) -> str:
+    """签到趋势图：把 checkin_date 标记值映射为上海自然日字符串。
+
+    r34：checkin_date 是「上海自然日 00:00」的 UTC-naive 标记（见
+    economy._today_start），+8h 即其代表的上海日期。防御性处理脏数据。
+    """
+    try:
+        return (day_val + timedelta(hours=8)).strftime("%Y-%m-%d")
+    except Exception:  # noqa: BLE001
+        return str(day_val)[:10]
+
 
 @admin_router.get("/economy/stats")
 def economy_stats(
@@ -451,6 +458,9 @@ def economy_stats(
 ):
     """经济系统概览：用户/积分/订单/兑换/邀请"""
     from sqlalchemy import func as _func
+    # r34：与签到写入帧同口径（上海自然日，UTC naive）。此前服务器本地口径，
+    # 签到帧改为上海日界后这里若不跟进会恒为 0。
+    from backend.api.economy import _today_start_utc_naive as _day_start_sh
 
     total_points = db.query(_func.coalesce(_func.sum(models.WebUser.points), 0)).scalar() or 0
     pending_recharge = db.query(models.RechargeOrder).filter(
@@ -463,8 +473,7 @@ def economy_stats(
     return {
         "total_points": int(total_points),
         "checkins_today": db.query(models.CheckinRecord).filter(
-            models.CheckinRecord.checkin_date >= datetime.now().replace(
-                hour=0, minute=0, second=0, microsecond=0)).count(),
+            models.CheckinRecord.checkin_date >= _day_start_sh()).count(),
         "orders": {"pending": pending_recharge,
                    "revenue": round(float(paid_recharge) + float(paid_sub), 2)},
         "exchange_codes": {
@@ -694,55 +703,80 @@ def get_stats_trend(
     from backend.emby_server import models as em
 
     days = max(1, min(days, 90))
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    start = today - timedelta(days=days - 1)
+    # r43：label 轴按上海自然日。入库时间戳是 UTC-naive，此前用服务器本地
+    # （生产 UTC）的 today 生成 UTC 日期序列，签到系列经 _checkin_day_key
+    # +8h 还原为上海日期 → 每天 00:00–08:00 CST 的签到在图上消失。
+    # tzdata 由镜像显式安装（Dockerfile.backend），这里仍 try/except 回退。
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    try:
+        _now = datetime.now(_ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    except Exception:  # noqa: BLE001
+        _now = datetime.now()
+    today = _now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_day = today - timedelta(days=days - 1)
+    # 过滤起点再往前推 8h，覆盖上海窗口左边界（D 日 00:00 CST = D-1 日 16:00 UTC）。
+    start = start_day - timedelta(hours=8)
 
     def _series(rows) -> dict:
+        # r43：SQL 只按原始 UTC-naive 时间戳分组取值，Python 侧逐行 +8h 再按
+        # 上海自然日聚合（此前用 func.date 按 UTC 切日、bucket 午夜 +8h 仍是同一天，
+        # 属 no-op：每天 00:00–08:00 CST 的事件被算到前一天 label。方言无关，
+        # SQLite/PG 的 interval 写法不同，不在 SQL 里做时区换算）。
         out: dict = {}
-        for day, value in rows:
-            key = str(day)[:10]
+        for ts, value in rows:
+            try:
+                key = (ts + timedelta(hours=8)).strftime("%Y-%m-%d")
+            except Exception:  # noqa: BLE001
+                key = str(ts)[:10]
             out[key] = out.get(key, 0) + (value or 0)
         return out
 
     user_rows = db.query(
-        func.date(models.WebUser.created_at), func.count(models.WebUser.id)
+        models.WebUser.created_at, func.count(models.WebUser.id)
     ).filter(models.WebUser.created_at >= start).group_by(
-        func.date(models.WebUser.created_at)
+        models.WebUser.created_at
     ).all()
 
     play_rows = db.query(
-        func.date(em.PlaybackSession.start_time), func.count(em.PlaybackSession.id)
+        em.PlaybackSession.start_time, func.count(em.PlaybackSession.id)
     ).filter(em.PlaybackSession.start_time >= start).group_by(
-        func.date(em.PlaybackSession.start_time)
+        em.PlaybackSession.start_time
     ).all()
 
     recharge_rows = db.query(
-        func.date(models.RechargeOrder.paid_at), func.coalesce(func.sum(models.RechargeOrder.price), 0)
+        models.RechargeOrder.paid_at, func.coalesce(func.sum(models.RechargeOrder.price), 0)
     ).filter(
         models.RechargeOrder.status == "paid", models.RechargeOrder.paid_at >= start
-    ).group_by(func.date(models.RechargeOrder.paid_at)).all()
+    ).group_by(models.RechargeOrder.paid_at).all()
 
     sub_rows = db.query(
-        func.date(models.SubscriptionOrder.paid_at), func.coalesce(func.sum(models.SubscriptionOrder.amount), 0)
+        models.SubscriptionOrder.paid_at, func.coalesce(func.sum(models.SubscriptionOrder.amount), 0)
     ).filter(
         models.SubscriptionOrder.status == "paid", models.SubscriptionOrder.paid_at >= start
-    ).group_by(func.date(models.SubscriptionOrder.paid_at)).all()
+    ).group_by(models.SubscriptionOrder.paid_at).all()
 
+    # r34：checkin_date 是「上海自然日 00:00」的 UTC-naive 标记（见 economy._today_start），
+    # 不是事件时间——按 func.date(checkin_date) 分组会把每天的签到算到前一天。
+    # 这里按原始标记值分组，在 Python 侧 +8h 还原上海日期（方言无关，
+    # SQLite/PG 的 interval 写法不同，不在 SQL 里做）。
     checkin_rows = db.query(
-        func.date(models.CheckinRecord.checkin_date), func.count(models.CheckinRecord.id)
+        models.CheckinRecord.checkin_date, func.count(models.CheckinRecord.id)
     ).filter(models.CheckinRecord.checkin_date >= start).group_by(
-        func.date(models.CheckinRecord.checkin_date)
+        models.CheckinRecord.checkin_date
     ).all()
+    checkin_map = {}
+    for _day_val, _cnt in checkin_rows:
+        _key = _checkin_day_key(_day_val)
+        checkin_map[_key] = checkin_map.get(_key, 0) + (_cnt or 0)
 
     users_map = _series(user_rows)
     plays_map = _series(play_rows)
     recharge_map = _series(recharge_rows)
     sub_map = _series(sub_rows)
-    checkin_map = _series(checkin_rows)
 
     series = []
     for i in range(days):
-        day = start + timedelta(days=i)
+        day = start_day + timedelta(days=i)
         key = day.strftime("%Y-%m-%d")
         series.append({
             "date": key,
