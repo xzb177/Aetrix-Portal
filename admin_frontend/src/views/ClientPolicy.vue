@@ -4,8 +4,6 @@
  *
  * 一句话回答「客户端这边到底允许做什么」：
  *
- * - **转码**：允不允许服务端转码、同时几路、码率上限（省 CPU / 省上行）；
- * - **客户端准入**：哪些 UA 不许进（老版本、盗版客户端），或反过来只允许白名单；
  * - **下载与设备**：是否允许下载、每人几台设备、超限是拒绝还是自动踢最久未用的、
  *   安全日志保留多久（这组 SystemConfig 键的唯一写入口，「系统设置」只读回显）。
  *
@@ -16,19 +14,19 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { toAdminError } from '@/utils/errorMessage'
 import {
-  Activity, AlertTriangle, Clock, Cloud, Cpu, Download, Gauge, Info, RefreshCw, Save,
-  Server, ShieldBan, Smartphone, Target, Tv, Zap,
+  Activity, AlertTriangle, Download, Gauge, Info, RefreshCw, Save,
+  Server, Smartphone, Zap,
 } from 'lucide-vue-next'
 import { AdvancedSettings, EmptyState, PageHeader, SectionCard, StatTile } from '@/components/ui'
 import {
-  fetchCdnConfig, fetchPlayLines, fetchPlaybackPolicy,
-  updateCdnConfig, updatePlaybackPolicy,
+  fetchPlayLines, fetchPlaybackPolicy,
+  updatePlaybackPolicy,
 } from '@/api/admin'
 import { fmtBytes } from '@/composables/useDangerOps'
 // 下载与设备风控落在经济设置里：这批 SystemConfig 键的唯一写入口（系统设置页只读回显）
 import { fetchEconomySettings, updateEconomySettings } from '@/api/economy'
 import type {
-  CdnConfig, PlaybackPolicy, PlaybackRuntime,
+  PlaybackPolicy, PlaybackRuntime,
   PlayLinesSnapshot,
 } from '@/types'
 import { useAuthStore } from '@/stores/auth'
@@ -44,13 +42,8 @@ const loading = ref(false)
 const loadError = ref(false)
 const savingPolicy = ref(false)
 const savingOps = ref(false)
-const savingCdn = ref(false)
 
 const policy = ref<PlaybackPolicy>({
-  transcode_enabled: true,
-  max_concurrent_transcodes: 0,
-  blocked_agents: '',
-  allowed_agents: '',
   drive_direct_play_enabled: true,
 })
 const runtime = ref<PlaybackRuntime | null>(null)
@@ -60,12 +53,6 @@ const ops = ref({ allow_download: 'true', device_limit_per_user: '0', device_lim
 /** 下载与设备配置没读到：表单里不是生效值，禁止保存（否则会用空值覆盖线上配置） */
 const opsError = ref(false)
 
-/** CDN 域名预留（播放三层第 2/3 层）：只做域名预留，默认关闭 */
-const cdnConfig = ref<CdnConfig>({
-  domain: '', normalized: '', enabled: false, segment_cache_header: '',
-})
-/** 服务端注册的线路清单（relay / cdn）——展示用，不在这里改 */
-const cdnPlayLines = ref<string[]>([])
 
 const PLAYBACK_NODE_LABEL: Record<string, string> = {
   ea: '分离部署的 EA 节点',
@@ -77,19 +64,14 @@ async function load() {
   loading.value = true
   loadError.value = false
   try {
-    const [p, s, c, ln] = await Promise.all([
+    const [p, s, ln] = await Promise.all([
       fetchPlaybackPolicy(),
       fetchEconomySettings().catch(() => null),
-      fetchCdnConfig().catch(() => null),
       fetchPlayLines().catch(() => null),
     ])
     policy.value = p.policy
     runtime.value = p.runtime
     playLines.value = ln
-    if (c) {
-      cdnConfig.value = c.cdn
-      cdnPlayLines.value = c.play_lines
-    }
     opsError.value = !s
     if (s) {
       ops.value = {
@@ -110,13 +92,13 @@ async function load() {
 onMounted(load)
 
 // ==================== 播放线路可观测（Phase 3） ====================
-// 四条线路各一张卡片。这里**不改任何线路配置**（配置在下面 CDN / 本地缓存卡片里），
+// 播放路径只读展示。这里**不改任何线路配置**，只回答每条线路能不能用。
 // 只回答“这会儿每条线路怎么样”：能不能用、是不是在降级、有多少人多少流量、效果如何。
 
 const playLines = ref<PlayLinesSnapshot | null>(null)
 
-/** 本机文件整文件直发 / 转码拉流不走本服务响应体，流量口径不包含它们 */
-const lineBytesHint = '流量 = 本进程经手的出流量（不含转码时 ffmpeg 的拉流与整文件直发）'
+/** 本机文件整文件直发不走本服务响应体，流量口径不包含它们 */
+const lineBytesHint = '流量 = 本进程经手的出流量（不含整文件直发）'
 
 async function savePolicy() {
   savingPolicy.value = true
@@ -144,29 +126,6 @@ async function saveOps() {
   }
 }
 
-async function saveCdn() {
-  savingCdn.value = true
-  try {
-    const res = await updateCdnConfig({
-      domain: cdnConfig.value.domain,
-      enabled: cdnConfig.value.enabled,
-    })
-    cdnConfig.value = res.cdn
-    ElMessage.success(cdnConfig.value.enabled
-      ? 'CDN 预留已启用：播放 URL 走该域名，热门分片由边缘缓存'
-      : 'CDN 预留已保存（未启用，播放 URL 与升级前逐字节一致）')
-  } catch (e) {
-    ElMessage.error(toAdminError(e, '保存失败'))
-  } finally {
-    savingCdn.value = false
-  }
-}
-
-const blockedCount = computed(
-  () => (policy.value.blocked_agents || '').split(/[,，\n]/).filter((v) => v.trim()).length,
-)
-const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_seconds ?? 0))
-
 </script>
 
 <template>
@@ -174,7 +133,7 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
     <PageHeader
       eyebrow="安全与准入"
       title="客户端策略"
-      description="转码、客户端准入、下载与设备、播放线路：改完对面板与出流的节点同时生效（管理员不受这些策略限制）。"
+      description="下载与设备、播放线路：改完对面板与出流的节点同时生效（管理员不受这些策略限制）。"
     >
       <template #actions>
         <el-button :loading="loading" @click="load">
@@ -203,35 +162,15 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
       description="下面显示的是默认值，请勿直接保存。点右上角「刷新」重试。"
     />
 
-    <!-- 运行态：改上限之前先知道现在跑到什么程度 -->
+    <!-- 运行态 -->
     <SectionCard
       v-if="runtime"
       title="运行态"
       :icon="Gauge"
       meta="本进程"
-      description="分离部署时转码跑在 EA 上，这里的数字是面板本机的。"
+      description="当前播放由谁出流（面板本机判定）。"
     >
       <div class="tile-grid">
-        <StatTile
-          label="正在转码"
-          :icon="Cpu"
-          :value="runtime.active_transcodes"
-          :tone="runtime.active_transcodes > 0 ? 'warn' : 'plain'"
-        />
-        <StatTile
-          :label="policy.max_concurrent_transcodes ? '策略上限' : '内置上限'"
-          :icon="Target"
-          :value="policy.max_concurrent_transcodes || runtime.capacity"
-          suffix="路"
-        />
-        <StatTile label="闲置回收" :icon="Clock" :value="idleSeconds" suffix="s" />
-        <StatTile
-          label="ffmpeg"
-          :icon="Tv"
-          :value="runtime.ffmpeg_available ? '可用' : '未安装'"
-          :tone="runtime.ffmpeg_available ? 'ok' : 'warn'"
-          class="text-tile"
-        />
         <StatTile
           label="当前出流"
           :icon="Server"
@@ -239,93 +178,6 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
           class="text-tile"
         />
       </div>
-      <template #footer>
-        内置上限 {{ runtime.capacity }} 路（来自 <code>EMBY_MAX_TRANSCODES</code> 或 CPU 核数）；
-        超上限时只拒绝<strong>新的</strong>转码请求，不会中断正在看的人。
-      </template>
-    </SectionCard>
-
-    <!-- 转码与清晰度 -->
-    <SectionCard title="转码与清晰度" :icon="Tv" description="控制服务端转码：省 CPU / 省上行与兼容性之间的取舍。">
-      <div class="cp-field">
-        <div class="cp-field-main">
-          <label class="cp-label" for="cp-transcode">允许服务端转码</label>
-          <p class="cp-hint">
-            关闭后只放直连 / 直接播放：省 CPU 与上行，但客户端兼容性会变差
-            （网页端播放器遇到不支持的编码会播不了）。
-          </p>
-        </div>
-        <el-switch id="cp-transcode" v-model="policy.transcode_enabled" :disabled="!isSuper" />
-      </div>
-
-      <div class="cp-field">
-        <div class="cp-field-main">
-          <label class="cp-label">并发转码上限</label>
-          <p class="cp-hint">
-            0 = 用进程内置上限（默认按 CPU 核数）。设成具体值后，满了会<strong>拒绝新的转码请求</strong>
-            并提示稍后再试，而不是把整台机器的 CPU 打满、所有人一起卡。
-          </p>
-        </div>
-        <el-input-number
-          v-model="policy.max_concurrent_transcodes"
-          :min="0" :max="200"
-          :disabled="!isSuper"
-          controls-position="right"
-          class="cp-num"
-        />
-      </div>
-
-      <template #footer>
-        <div class="cp-save">
-          <span class="cp-save-hint">与「客户端准入」「Drive 302 直链」同属播放策略，保存任一处都会一起提交。</span>
-          <el-button type="primary" :loading="savingPolicy" :disabled="!isSuper" @click="savePolicy">
-            <Save :size="14" class="btn-ico" />保存
-          </el-button>
-        </div>
-      </template>
-    </SectionCard>
-
-    <!-- 客户端准入 -->
-    <SectionCard title="客户端准入" :icon="ShieldBan" :meta="`${blockedCount} 条黑名单规则`">
-      <div class="cp-field is-column">
-        <label class="cp-label">客户端黑名单（UA 关键词，逗号分隔）</label>
-        <el-input
-          v-model="policy.blocked_agents"
-          type="textarea"
-          :rows="2"
-          :disabled="!isSuper"
-          placeholder="例如：Old-TV, Emby/2.0, 盗版播放器"
-        />
-        <p class="cp-hint">
-          按子串匹配（不区分大小写）：命中就拒绝，连播放信息都拿不到。
-          <strong>管理员不受限</strong>，排障时不会被自己的规则挡住。
-          另一处在「安全与准入 → <router-link :to="{ name: 'AccessGuard' }" class="cp-link">访问拦截</router-link>」：
-          区别是这里只管<strong>播放准入</strong>，那里是全站访问（连面板登录都会拦）。
-        </p>
-      </div>
-
-      <div class="cp-field is-column">
-        <label class="cp-label">客户端白名单（填了就只放行列表内的客户端）</label>
-        <el-input
-          v-model="policy.allowed_agents"
-          type="textarea"
-          :rows="2"
-          :disabled="!isSuper"
-          placeholder="例如：Emby, Infuse, SenPlayer（留空 = 不限制）"
-        />
-        <p class="cp-hint">
-          白名单优先于黑名单；开启后无法识别 UA 的请求（脚本 / 未知客户端）也会被拒。
-        </p>
-      </div>
-
-      <template #footer>
-        <div class="cp-save">
-          <span class="cp-save-hint">与「转码与清晰度」同属播放策略，保存任一处都会一起提交。</span>
-          <el-button type="primary" :loading="savingPolicy" :disabled="!isSuper" @click="savePolicy">
-            <Save :size="14" class="btn-ico" />保存客户端准入
-          </el-button>
-        </div>
-      </template>
     </SectionCard>
 
     <!-- 下载与设备：这批配置键的唯一写入口（系统设置页只读回显） -->
@@ -415,8 +267,8 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
       :description="playLines?.scope_note || lineBytesHint"
     >
       <p class="cp-hint cp-lead">
-        Drive 文件直接 302 到谷歌直链，播放器自拉，字节不经服务器；
-        115 等挂载源暂不支持（410）。转码不受影响。
+        播放统一走 302 直链：Drive 文件 302 到谷歌直链，挂载源（115/WebDAV/AList）
+        302 到挂载解析出的直链，本机文件直接流——字节不经服务器。
       </p>
 
       <div v-if="playLines" class="line-card">
@@ -428,9 +280,6 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
           <StatTile label="播放请求（本进程）" :value="playLines.requests" />
           <StatTile label="出流量（本进程）" :value="fmtBytes(playLines.bytes_out)" />
         </div>
-        <ul class="line-ready">
-          <li><span class="line-key">CDN</span>{{ playLines.cdn.ready_note }}</li>
-        </ul>
       </div>
       <EmptyState
         v-else-if="!loading"
@@ -463,7 +312,7 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
 
       <template #footer>
         <div class="cp-save">
-          <span class="cp-save-hint">与「转码与清晰度」「客户端准入」同属播放策略，保存任一处都会一起提交。</span>
+          <span class="cp-save-hint">本页所有开关同属播放策略，保存任一处都会一起提交。</span>
           <el-button type="primary" :loading="savingPolicy" :disabled="!isSuper" @click="savePolicy">
             <Save :size="14" class="btn-ico" />保存
           </el-button>
@@ -471,70 +320,6 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
       </template>
     </SectionCard>
 
-    <SectionCard title="CDN 域名预留" :icon="Cloud">
-      <template #actions>
-        <span class="au-badge" :class="cdnConfig.enabled ? 'au-badge-green' : 'au-badge-muted'">
-          {{ cdnConfig.enabled ? '已启用' : '未启用（默认）' }}
-        </span>
-      </template>
-
-      <p class="cp-hint cp-lead">
-        把一个回源到本服务的 CDN 域名填进来并启用：播放 URL（视频流 / HLS 播放列表 / 字幕）
-        改走该域名，热门视频分片由 CDN 边缘缓存，省掉源站（Google Drive）的单文件下载配额。
-        <strong>只做域名预留</strong>：备案、证书、回源与缓存规则都在 CDN 厂商控制台自行配置，本服务不代管。
-      </p>
-
-      <div class="cp-field">
-        <div class="cp-field-main">
-          <label class="cp-label">CDN 域名</label>
-          <p class="cp-hint">
-            例如 cdn.example.com 或 https://cdn.example.com（省略协议默认 https）。
-            该域名必须回源到本服务，否则播放会失败。
-          </p>
-        </div>
-        <el-input
-          v-model="cdnConfig.domain"
-          class="cp-input"
-          :disabled="!isSuper"
-          placeholder="cdn.example.com"
-          clearable
-        />
-      </div>
-
-      <div class="cp-field">
-        <div class="cp-field-main">
-          <label class="cp-label">启用 CDN（总开关）</label>
-          <p class="cp-hint">
-            关闭时（默认）播放 URL 与升级前一致；开启后还需域名合法才生效。
-            用户侧「线路选择」里的 cdn 线路也只在总开关开启后才出现并生效。
-          </p>
-        </div>
-        <el-switch v-model="cdnConfig.enabled" :disabled="!isSuper" />
-      </div>
-
-      <div class="cp-field">
-        <div class="cp-field-main">
-          <label class="cp-label">缓存口径</label>
-          <p class="cp-hint">
-            视频分片：<code>{{ cdnConfig.segment_cache_header || 'public, max-age=300, s-maxage=21600' }}</code>
-            （边缘可缓存）；播放列表 / API / 302 跳转：<code>no-store</code>（绝不被缓存）。
-          </p>
-        </div>
-        <span class="cp-value">
-          {{ cdnConfig.normalized || '域名未填写' }}
-          <template v-if="cdnPlayLines.length">· 线路 {{ cdnPlayLines.join(' / ') }}</template>
-        </span>
-      </div>
-
-      <template #footer>
-        <div class="cp-save">
-          <span class="cp-save-hint">保存后新的播放 URL 立即按此生成。</span>
-          <el-button type="primary" :loading="savingCdn" :disabled="!isSuper" @click="saveCdn">
-            <Save :size="14" class="btn-ico" />保存 CDN 预留
-          </el-button>
-        </div>
-      </template>
-    </SectionCard>
 
     <NoticePanel
       title="为什么这些策略在这里，而系统设置在别处"
@@ -543,7 +328,7 @@ const idleSeconds = computed(() => Math.round(runtime.value?.idle_timeout_second
       storage-key="client-policy-scope"
     >
       <div class="policy-guide">
-        这里只放「客户端能做什么」（转码、清晰度、准入、下载与设备）；
+        这里只放「客户端能做什么」（下载与设备）；
         「站点怎么运营」（注册、支付、付费墙、邀请返利）仍然在系统设置里。
       </div>
     </NoticePanel>
